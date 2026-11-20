@@ -2,9 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  workflow_dispatch:
 
 concurrency:
   group: build-${{ github.ref }}
@@ -40,45 +38,31 @@ jobs:
             echo "::error::versionName '$version' has unsupported characters"
             exit 1
           fi
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-              echo "::error::tag $GITHUB_REF_NAME doesn't match versionName $version"
-              exit 1
-            fi
-            git fetch --no-tags origin main
-            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-              echo "::error::tag $GITHUB_REF_NAME is not reachable from main"
-              exit 1
-            fi
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match versionName $version"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME is not reachable from main"
+            exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Check signing configuration
-        id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
         run: |
           set -euo pipefail
-          enabled=false
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            if [ -z "$KEYSTORE_BASE64" ]; then
-              echo "::error::SIGNING_KEYSTORE_BASE64 is required for tag builds"
-              exit 1
-            fi
-            if [ -z "$STORE_PASSWORD" ]; then
-              echo "::error::SIGNING_STORE_PASSWORD is required for tag builds"
-              exit 1
-            fi
-            enabled=true
-          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ]; then
-              enabled=true
-            else
-              echo "::warning::SIGNING_KEYSTORE_BASE64 and SIGNING_STORE_PASSWORD must both be set to sign main builds; building an unsigned APK"
-            fi
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::repository secret SIGNING_KEYSTORE_BASE64 is not set"
+            exit 1
           fi
-          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          if [ -z "$STORE_PASSWORD" ]; then
+            echo "::error::repository secret SIGNING_STORE_PASSWORD is not set"
+            exit 1
+          fi
 
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
@@ -87,32 +71,20 @@ jobs:
           cache: gradle
 
       - name: Decode signing key
-        if: steps.signing.outputs.enabled == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
 
-      - name: Warn about unsigned build
-        if: steps.signing.outputs.enabled != 'true'
-        run: |
-          echo "::warning::Signing is only enabled for main and v* tags with SIGNING_KEYSTORE_BASE64 set; building an unsigned APK"
-
-      - name: Build signed release APK
-        if: steps.signing.outputs.enabled == 'true'
+      - name: Test, lint and build the signed release APK
         env:
           SIGNING_STORE_FILE: ${{ runner.temp }}/release.jks
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: eapenroll
         run: ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
 
-      - name: Build unsigned release APK
-        if: steps.signing.outputs.enabled != 'true'
-        run: ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
-
       - name: Check signature
-        if: steps.signing.outputs.enabled == 'true'
         env:
           EXPECTED_SHA256: ${{ vars.SIGNING_CERT_SHA256 }}
         run: |
@@ -142,20 +114,10 @@ jobs:
         id: apk
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          SIGNED: ${{ steps.signing.outputs.enabled }}
         run: |
           set -euo pipefail
-          if [ "$SIGNED" = "true" ]; then
-            src="app/build/outputs/apk/release/app-release.apk"
-            file="eap-enroll-$VERSION.apk"
-          else
-            src="app/build/outputs/apk/release/app-release-unsigned.apk"
-            file="eap-enroll-$VERSION-unsigned.apk"
-          fi
-          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            file="${file%.apk}-${GITHUB_SHA::7}.apk"
-          fi
-          cp "$src" "$file"
+          file="eap-enroll-$VERSION.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$file"
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "artifact=${file%.apk}" >> "$GITHUB_OUTPUT"
 
@@ -171,7 +133,6 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

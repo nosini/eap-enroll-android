@@ -1,0 +1,65 @@
+# Development
+
+## Building
+
+You need JDK 17 and an Android SDK with platform 36.1.
+
+    ./gradlew testDebugUnitTest assembleDebug
+
+The debug APK ends up in `app/build/outputs/apk/debug/`.
+[e2e/README.md](../e2e/README.md) describes the end-to-end test against
+eap-enroll-server.
+
+## Release builds
+
+GitHub Actions builds releases from version tags only; pushes to `main`
+don't build anything. For a `v*` tag it runs the unit tests and lint,
+builds and signs the release APK, and publishes it as a GitHub release.
+The tag must match `versionName` and be reachable from `main`:
+
+    git tag -s v0.2.0 -m "EAP Enroll 0.2.0"
+    git push origin v0.2.0
+
+Signing needs two repository secrets:
+
+- `SIGNING_KEYSTORE_BASE64`: the keystore, base64-encoded
+  (`base64 -w0 release.jks`)
+- `SIGNING_STORE_PASSWORD`: its password (PKCS12, so it's also the key
+  password)
+
+The key alias is `eapenroll`. The repository variable `SIGNING_CERT_SHA256`
+holds the SHA-256 of the signing certificate (from `keytool -list -v`),
+which the workflow compares with the built APK. The APK is named
+`eap-enroll-$version.apk`.
+
+Make the key outside the checkout:
+
+    keytool -genkeypair -keystore release.jks -storetype PKCS12 \
+        -alias eapenroll -keyalg EC -groupname secp384r1 \
+        -sigalg SHA384withECDSA -validity 10000 -dname "CN=EAP Enroll"
+
+Keep it backed up outside GitHub: without it, a new build can't update an
+installed app, and uninstalling deletes the app's keys and its Wi-Fi
+network.
+
+For local release builds, put the signing details in a gitignored
+`keystore.properties` next to `settings.gradle.kts`. `SIGNING_*`
+environment variables take precedence, and a relative `storeFile` is
+relative to the checkout. Without signing details, `assembleRelease`
+writes an unsigned APK.
+
+```properties
+storeFile=/path/to/release.jks
+storePassword=...
+keyAlias=eapenroll
+```
+
+## Switching from a debug build to a release build
+
+A release build can't be installed over a debug build because the signing
+keys differ. Uninstall the debug build and set the app up again.
+
+Android's key rotation would allow an in-place update, but a rotated
+app's key attestation names the oldest certificate in its signing history
+(`KeyAttestationApplicationIdProviderService` reads `GET_SIGNATURES`).
+That would make the debug key the app's attested identity for good.

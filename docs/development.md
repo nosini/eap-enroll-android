@@ -2,7 +2,7 @@
 
 ## Building
 
-You need JDK 17 and an Android SDK with platform 36.1.
+Building needs JDK 17 and an Android SDK with platform 36.1.
 
     ./gradlew testDebugUnitTest assembleDebug
 

@@ -5,7 +5,7 @@ Wi-Fi on an Android phone and renews it before it expires. The private key
 is made on the phone and goes straight into Android's Wi-Fi keystore: it
 is never exported, copied or typed in.
 
-It's meant for personal phones on a network you run yourself. It doesn't
+It's meant for personal phones on self-hosted networks. It doesn't
 need device management, a work profile or Google Play services.
 
 - One-step setup from a QR code or link from
@@ -16,13 +16,13 @@ need device management, a work profile or Google Play services.
 - The phone authenticates to the server with a key in its secure hardware
   (StrongBox or the TEE), with hardware key attestation.
 - A manual mode for any CA: the app makes the key and a certificate
-  request (CSR), and you import the signed certificate.
+  request (CSR) to be signed by the CA, and imports the certificate.
 
 ## Requirements
 
 - Android 12 or later.
 - A Wi-Fi network with EAP-TLS (WPA2-Enterprise or WPA3-Enterprise).
-- For enrollment and renewal: an eap-enroll-server for your network.
+- For enrollment and renewal: an eap-enroll-server for the network.
   Without one, use [manual setup](#manual-setup).
 
 Tested on a Pixel 10 Pro XL with GrapheneOS (Android 17). Other phones
@@ -46,7 +46,7 @@ Releases are signed with this certificate (check with
    `eap-enroll code` on the server, which shows a QR code with an
    `eapenroll://setup?...` link. The code works once and expires after a
    few minutes.
-2. Scan the QR code. If your camera app opens the link, EAP Enroll opens
+2. Scan the QR code. If the camera app opens the link, EAP Enroll opens
    with it filled in. Otherwise copy the link, open EAP Enroll and tap
    **Paste setup link**.
 3. Tap **Set up with this link**. The app gets its device credential, the
@@ -73,7 +73,7 @@ After the phone has connected with the new certificate, the app tells the
 server, which revokes the older ones. Until then, the older certificates
 stay valid until they expire.
 
-The app shows the state of both certificates. It notifies you if a
+The app shows the state of both certificates. It shows a notification if a
 certificate is close to expiring and renewal hasn't worked, or if the
 server has refused the phone.
 
@@ -98,13 +98,13 @@ server has refused the phone.
 
 Without an enrollment server, under **Manual setup (fallback)**:
 
-1. Enter the SSID exactly as broadcast (including any spaces), your EAP
+1. Enter the SSID exactly as broadcast (including any spaces), the EAP
    identity and the RADIUS server's domain, choose the security type, and
    tap **Save settings**.
 2. **Import CA certificate (PEM)**: the CA that signed the RADIUS
    server's certificate.
 3. **Generate key and CSR**, then share, save or copy the CSR and have it
-   signed by your CA.
+   signed by the network's CA.
 4. **Import certificate file (PEM)** or **Paste certificate from
    clipboard**.
 5. **Add network suggestion**, or **Save network through Settings** to
@@ -123,10 +123,10 @@ Manual certificates aren't renewed; repeat the steps before they expire.
   apps, including GrapheneOS Camera, don't open `eapenroll://` links. Paste
   the link instead.
 - **"The app isn't allowed to use the network".** On GrapheneOS, network
-  access is a permission you can turn off. Allow **Network** in the app's
+  access is a permission that can be turned off. Allow **Network** in the app's
   settings.
-- **The phone doesn't connect after you disconnected or forgot the
-  network.** Android then stops connecting to the app's network on its own.
+- **The phone doesn't connect after the network was disconnected or
+  forgotten.** Android then stops connecting to the app's network on its own.
   Select the network in Wi-Fi settings once, or turn Wi-Fi off and on.
 - **Renewals aren't confirmed.** Check the location permission. With the
   app open, turning Wi-Fi off and on confirms straight away.

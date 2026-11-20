@@ -3,6 +3,7 @@ package eu.appwerf.eapenroll
 import android.net.wifi.WifiEnterpriseConfig
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
+import android.os.Build
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 
@@ -36,6 +37,10 @@ object WifiSetup {
             caCertificates = settings.caCertificates.toTypedArray()
             domainSuffixMatch = settings.serverDomain
             setClientKeyEntryWithCertificateChain(privateKey, chain.toTypedArray())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // The default minimum is TLS 1.0.
+                minimumTlsVersion = WifiEnterpriseConfig.TLS_V1_2
+            }
         }
 
         val builder = WifiNetworkSuggestion.Builder().setSsid(settings.ssid)

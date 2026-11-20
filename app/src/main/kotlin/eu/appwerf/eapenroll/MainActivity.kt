@@ -84,17 +84,18 @@ class MainActivity : Activity() {
         }
 
         column.addView(heading("Network"))
-        ssidField = field(column, "SSID")
-        identityField = field(column, "EAP identity (username)")
-        domainField = field(column, "RADIUS server domain")
+        // Visible-password and URI variations keep keyboards from autocorrecting.
+        ssidField = field(column, "SSID", InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
+        identityField = field(column, "EAP identity (username)", InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
+        domainField = field(column, "RADIUS server domain", InputType.TYPE_TEXT_VARIATION_URI)
         val securityGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         securityGroup.addView(RadioButton(this).apply {
-            id = View.generateViewId(); text = "WPA2-Enterprise"; isChecked = true
+            id = View.generateViewId(); text = "WPA2/WPA3-Enterprise"; isChecked = true
         })
-        wpa3Button = RadioButton(this).apply { id = View.generateViewId(); text = "WPA3-Enterprise" }
+        wpa3Button = RadioButton(this).apply { id = View.generateViewId(); text = "WPA3-Enterprise only" }
         securityGroup.addView(wpa3Button)
         column.addView(securityGroup)
-        column.addView(button("Save settings") { saveSettings(); log("Settings saved") })
+        column.addView(button("Save settings") { attempt("Saving settings") { saveSettings(); log("Settings saved") } })
         column.addView(button("Import CA certificate (PEM)") { openDocument(REQUEST_CA) })
         caSummary = summary(column)
 
@@ -151,9 +152,9 @@ class MainActivity : Activity() {
         setPadding(0, dp(16), 0, dp(4))
     }
 
-    private fun field(parent: LinearLayout, hint: String) = EditText(this).apply {
+    private fun field(parent: LinearLayout, hint: String, variation: Int) = EditText(this).apply {
         this.hint = hint
-        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        inputType = InputType.TYPE_CLASS_TEXT or variation or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         isSingleLine = true
         parent.addView(this)
     }
@@ -196,11 +197,16 @@ class MainActivity : Activity() {
         p256Button.isChecked = prefs.getString("curve", CURVE_P384) == CURVE_P256
     }
 
+    /** Saves the form; throws if the domain isn't a valid host name, without saving anything. */
     private fun saveSettings() {
+        val domainText = domainField.text.toString()
+        val domain = if (domainText.isBlank()) "" else Input.normalizeDomain(domainText)
+        domainField.setText(domain)
         prefs.edit()
-            .putString("ssid", ssidField.text.toString().trim())
+            // Not trimmed: leading and trailing spaces are valid in an SSID.
+            .putString("ssid", ssidField.text.toString())
             .putString("identity", identityField.text.toString().trim())
-            .putString("domain", domainField.text.toString().trim())
+            .putString("domain", domain)
             .putBoolean("wpa3", wpa3Button.isChecked)
             .putString("curve", if (p256Button.isChecked) CURVE_P256 else CURVE_P384)
             .apply()
@@ -368,6 +374,12 @@ class MainActivity : Activity() {
         val settings = networkSettings()
         val keyPair = vault.load()
         val chain = Pem.certificates(chainFile.readBytes())
+        if (settings.ssid != settings.ssid.trim()) {
+            log("Note: the SSID starts or ends with a space; it has to match the network exactly")
+        }
+        log("Network: SSID '${settings.ssid}' (${settings.ssid.length} characters), identity '${settings.identity}', " +
+            "domain '${settings.serverDomain}', ${if (settings.wpa3) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"}, " +
+            "${settings.caCertificates.size} CA certificate(s), client chain of ${chain.size}")
         return WifiSetup.suggestion(settings, keyPair.private, chain)
     }
 

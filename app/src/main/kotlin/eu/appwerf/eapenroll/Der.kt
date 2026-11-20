@@ -3,7 +3,7 @@ package eu.appwerf.eapenroll
 import java.io.ByteArrayOutputStream
 import java.math.BigInteger
 
-/** Minimal DER encoder: just what a PKCS#10 request needs. */
+/** Minimal DER encoder and reader: what PKCS#10 requests and PKCS#7 certs-only need. */
 object Der {
     private const val INTEGER = 0x02
     private const val BIT_STRING = 0x03
@@ -78,5 +78,61 @@ object Der {
         for (i in groups.indices.reversed()) {
             out.write(if (i > 0) groups[i] or 0x80 else groups[i])
         }
+    }
+
+    /** One TLV inside [data]: the tag, and where its encoding and content start and end. */
+    class Element(val data: ByteArray, val tag: Int, val start: Int, val contentStart: Int, val end: Int) {
+        val isConstructed get() = tag and 0x20 != 0
+
+        fun encoded(): ByteArray = data.copyOfRange(start, end)
+
+        fun content(): ByteArray = data.copyOfRange(contentStart, end)
+
+        /** The elements inside a constructed element. */
+        fun children(): List<Element> {
+            require(isConstructed) { "DER element with tag $tag is not constructed" }
+            val result = ArrayList<Element>()
+            var pos = contentStart
+            while (pos < end) {
+                val child = read(data, pos, end)
+                result.add(child)
+                pos = child.end
+            }
+            return result
+        }
+    }
+
+    /** Reads the single element that makes up all of [data]. */
+    fun parse(data: ByteArray): Element {
+        val element = read(data, 0, data.size)
+        require(element.end == data.size) { "Trailing data after DER element" }
+        return element
+    }
+
+    /**
+     * Reads one element at [offset] that has to end at or before [limit].
+     * Only single-byte tags and definite lengths, as DER requires.
+     */
+    fun read(data: ByteArray, offset: Int, limit: Int): Element {
+        require(offset in 0 until limit && limit <= data.size) { "Truncated DER" }
+        val tag = data[offset].toInt() and 0xff
+        require(tag and 0x1f != 0x1f) { "Multi-byte DER tags are not supported" }
+        var pos = offset + 1
+        require(pos < limit) { "Truncated DER" }
+        val first = data[pos++].toInt() and 0xff
+        val length: Int
+        if (first < 0x80) {
+            length = first
+        } else {
+            val count = first and 0x7f
+            require(count in 1..3) { "Unsupported DER length" }
+            require(pos + count <= limit) { "Truncated DER" }
+            var value = 0
+            repeat(count) { value = (value shl 8) or (data[pos++].toInt() and 0xff) }
+            require(value >= 0x80 && value ushr (8 * (count - 1)) != 0) { "Non-minimal DER length" }
+            length = value
+        }
+        require(length <= limit - pos) { "Truncated DER" }
+        return Element(data, tag, offset, pos, pos + length)
     }
 }

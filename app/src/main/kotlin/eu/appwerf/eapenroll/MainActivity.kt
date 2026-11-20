@@ -1,5 +1,6 @@
 package eu.appwerf.eapenroll
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -17,6 +18,7 @@ import android.text.InputType
 import android.util.Log
 import android.view.View
 import android.view.WindowInsets
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -29,6 +31,8 @@ import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import java.text.DateFormat
 import java.util.Date
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
@@ -44,6 +48,11 @@ class MainActivity : Activity() {
     private lateinit var keySummary: TextView
     private lateinit var certSummary: TextView
     private lateinit var logView: TextView
+    private lateinit var enrollSummary: TextView
+    private lateinit var setupField: EditText
+    private lateinit var enroller: Enroller
+    private lateinit var deviceKeys: AndroidDeviceKeys
+    private val worker: ExecutorService = Executors.newSingleThreadExecutor()
 
     private val caFile get() = File(filesDir, "ca.pem")
     private val csrFile get() = File(noBackupFilesDir, "csr.pem")
@@ -55,13 +64,32 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        prefs = getSharedPreferences(NetworkPrefs.PREFS, MODE_PRIVATE)
         vault = KeyVault(this)
         wifi = getSystemService(WifiManager::class.java)
+        val uiLog: (String) -> Unit = { message -> runOnUiThread { appendLog(message) } }
+        enroller = Enrollment.enroller(this, uiLog)
+        deviceKeys = AndroidDeviceKeys()
         setContentView(buildUi())
         loadSettings()
         refreshSummaries()
         log(deviceInfo())
+        handleSetupIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleSetupIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshEnrollment()
+    }
+
+    override fun onDestroy() {
+        worker.shutdown()
+        super.onDestroy()
     }
 
     override fun onStart() {
@@ -83,6 +111,26 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
         }
 
+        column.addView(heading("Enrollment"))
+        enrollSummary = summary(column)
+        setupField = field(column, "Setup link (eapenroll://setup?...)", InputType.TYPE_TEXT_VARIATION_URI).apply {
+            // The link holds the one-time code: keep it out of the saved
+            // instance state and the keyboard's learning.
+            isSaveEnabled = false
+            imeOptions = imeOptions or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        }
+        column.addView(button("Paste setup link") { pasteSetupLink() })
+        column.addView(button("Set up with this link") { setUp() })
+        column.addView(button("Check and renew now") { background("Checking") { enroller.maintain() } })
+        column.addView(button("Get a new Wi-Fi certificate now") {
+            background("Renewing") { enroller.maintain(renewWifi = true) }
+        })
+        column.addView(button("Allow location (lets the app confirm renewals)") { requestLocation() })
+        column.addView(button("Allow notifications") { requestNotifications() })
+        column.addView(button("Open Wi-Fi panel") { startActivity(Intent(Settings.Panel.ACTION_WIFI)) })
+        column.addView(button("Remove enrollment") { removeEnrollment() })
+
+        column.addView(heading("Manual setup (fallback)"))
         column.addView(heading("Network"))
         // Visible-password and URI variations keep keyboards from autocorrecting.
         ssidField = field(column, "SSID", InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
@@ -174,6 +222,10 @@ class MainActivity : Activity() {
 
     private fun log(message: String) {
         Log.i(TAG, message)
+        appendLog(message)
+    }
+
+    private fun appendLog(message: String) {
         val time = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date())
         logView.append("$time $message\n")
     }
@@ -187,13 +239,194 @@ class MainActivity : Activity() {
         }
     }
 
+    // Enrollment
+
+    private fun handleSetupIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (intent.action != Intent.ACTION_VIEW || data.scheme != "eapenroll") return
+        // Reopened from recents: Android delivers the original link again,
+        // whose code has most likely been used.
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        // Clear it, so a recreated activity doesn't see the link again.
+        intent.data = null
+        attempt("Reading setup link") {
+            val link = SetupUri.parse(data.toString())
+            setupField.setText(data.toString())
+            log("Setup link for ${link.serverUrl} filled in. Tap \"Set up with this link\" to enroll.")
+        }
+    }
+
+    private fun pasteSetupLink() = attempt("Pasting setup link") {
+        val clip = getSystemService(ClipboardManager::class.java).primaryClip
+        val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
+        check(!text.isNullOrBlank()) { "Clipboard is empty" }
+        setupField.setText(text.trim())
+    }
+
+    private fun setUp() = attempt("Setting up") {
+        val link = SetupUri.parse(setupField.text.toString())
+        background("Setting up") {
+            val outcome = enroller.setup(link)
+            scheduleQuietly { Jobs.scheduleDaily(this) }
+            runOnUiThread { setupField.setText("") }
+            outcome
+        }
+    }
+
+    /** Runs [block] on the worker thread, logs its outcome and refreshes the status. */
+    private fun background(what: String, block: () -> Enroller.Outcome) {
+        saveSettingsQuietly()
+        log("$what...")
+        worker.execute {
+            val message = try {
+                val outcome = block()
+                if (outcome == Enroller.Outcome.RETRY) scheduleQuietly { Jobs.runSoon(this) }
+                "$what: $outcome"
+            } catch (e: Exception) {
+                Log.w(TAG, "$what failed", e)
+                "$what failed: ${Errors.describe(e)}"
+            }
+            Notifier.update(this)
+            runOnUiThread {
+                log(message)
+                refreshEnrollment()
+            }
+        }
+    }
+
+    /** A failure to schedule background work shouldn't hide what the request itself did. */
+    private fun scheduleQuietly(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            Log.w(TAG, "Scheduling background work failed", e)
+            runOnUiThread { appendLog("Scheduling background work failed: ${Errors.describe(e)}") }
+        }
+    }
+
+    private fun saveSettingsQuietly() {
+        runCatching { saveSettings() }
+    }
+
+    private fun removeEnrollment() = attempt("Removing enrollment") {
+        worker.execute {
+            val message = try {
+                enroller.forget()
+                deviceKeys.deleteOthers(emptySet())
+                Jobs.cancelAll(this)
+                val status = wifi.removeNetworkSuggestions(emptyList())
+                "Enrollment removed; suggestions removed: ${WifiSetup.statusName(status)}"
+            } catch (e: Exception) {
+                "Removing enrollment failed: ${e.javaClass.simpleName}: ${e.message}"
+            }
+            Notifier.update(this)
+            runOnUiThread {
+                log(message)
+                refreshEnrollment()
+            }
+        }
+    }
+
+    private fun requestLocation() {
+        val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fine) {
+            requestPermissions(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                REQUEST_LOCATION,
+            )
+        } else {
+            // Android shows the "Allow all the time" choice in Settings.
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQUEST_LOCATION)
+        }
+    }
+
+    private fun requestNotifications() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        } else {
+            log("Notifications need no permission on this Android version")
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        log("Permissions: " + permissions.indices.joinToString {
+            "${permissions[it].substringAfterLast('.')}=" +
+                if (grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
+        })
+        refreshEnrollment()
+    }
+
+    private fun refreshEnrollment() {
+        worker.execute {
+            val text = try {
+                enrollmentText()
+            } catch (e: Exception) {
+                "Enrollment state unreadable: ${e.javaClass.simpleName}: ${e.message}"
+            }
+            runOnUiThread { enrollSummary.text = text }
+        }
+    }
+
+    private fun enrollmentText(): String {
+        val state = enroller.state()
+        if (state != null && state.problem == null) scheduleQuietly { Jobs.scheduleDaily(this) }
+        state ?: return "Not enrolled. Open the setup link from the enrollment server " +
+            "(scan its QR code), or paste it below."
+        val now = System.currentTimeMillis()
+        val date = DateFormat.getDateInstance()
+        val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+        val lines = ArrayList<String>()
+        lines += "Server: ${state.serverUrl}"
+        val device = state.deviceChain[0]
+        lines += "Device credential: ${Certs.commonName(device)}, valid until ${date.format(device.notAfter)} " +
+            "(key in ${deviceKeys.describe(state.deviceAlias)})"
+        state.profile?.let {
+            lines += "Network: '${it.ssid}', server ${it.serverDomain}, " +
+                if (prefs.getBoolean(NetworkPrefs.WPA3, false)) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"
+        }
+        val wifiCert = state.wifiChain?.get(0)
+        if (wifiCert == null) {
+            lines += "Wi-Fi certificate: none yet"
+        } else {
+            val start = wifiCert.notBefore.time
+            val renewAt = Date(start + (wifiCert.notAfter.time - start) / 3 * 2)
+            lines += "Wi-Fi certificate: serial ${wifiCert.serialNumber.toString(16)}, valid until " +
+                "${date.format(wifiCert.notAfter)}, renewal from ${date.format(renewAt)}"
+            lines += when {
+                !state.confirmPending -> "Confirmed: older Wi-Fi certificates are revoked."
+                state.connectedAfterInstall -> "Connected with it; confirming with the server."
+                else -> "Not confirmed yet: " + confirmHint()
+            }
+        }
+        when (state.problem) {
+            Problem.NEEDS_SETUP -> lines += "PROBLEM: the server no longer accepts this phone; set it up with a new link."
+            Problem.DISABLED -> lines += "PROBLEM: this phone is disabled on the server."
+            null -> {}
+        }
+        state.lastError?.let { lines += "Last error (${time.format(Date(state.lastErrorAt))}): $it" }
+        if (state.lastSuccessAt > 0) lines += "Last successful check: ${time.format(Date(state.lastSuccessAt))}"
+        Notifier.attentionText(state, now)?.let { lines += "Attention: $it" }
+        return lines.joinToString("\n")
+    }
+
+    private fun confirmHint(): String {
+        val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val background = checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return when {
+            !fine -> "allow location, then turn Wi-Fi off and on while this app is open."
+            !background -> "turn Wi-Fi off and on while this app is open (or allow location all the time)."
+            else -> "happens on the next Wi-Fi connection."
+        }
+    }
+
     // Settings
 
     private fun loadSettings() {
         ssidField.setText(prefs.getString("ssid", ""))
         identityField.setText(prefs.getString("identity", ""))
         domainField.setText(prefs.getString("domain", ""))
-        wpa3Button.isChecked = prefs.getBoolean("wpa3", false)
+        wpa3Button.isChecked = prefs.getBoolean(NetworkPrefs.WPA3, false)
         p256Button.isChecked = prefs.getString("curve", CURVE_P384) == CURVE_P256
     }
 
@@ -207,7 +440,7 @@ class MainActivity : Activity() {
             .putString("ssid", ssidField.text.toString())
             .putString("identity", identityField.text.toString().trim())
             .putString("domain", domain)
-            .putBoolean("wpa3", wpa3Button.isChecked)
+            .putBoolean(NetworkPrefs.WPA3, wpa3Button.isChecked)
             .putString("curve", if (p256Button.isChecked) CURVE_P256 else CURVE_P384)
             .apply()
     }
@@ -219,7 +452,7 @@ class MainActivity : Activity() {
             ssid = prefs.getString("ssid", "")!!,
             identity = prefs.getString("identity", "")!!,
             serverDomain = prefs.getString("domain", "")!!,
-            wpa3 = prefs.getBoolean("wpa3", false),
+            wpa3 = prefs.getBoolean(NetworkPrefs.WPA3, false),
             caCertificates = Pem.certificates(caFile.readBytes()),
         )
     }
@@ -458,6 +691,8 @@ class MainActivity : Activity() {
         const val REQUEST_CERT = 2
         const val REQUEST_SAVE_CSR = 3
         const val REQUEST_ADD_NETWORKS = 4
+        const val REQUEST_LOCATION = 5
+        const val REQUEST_NOTIFICATIONS = 6
         const val MAX_IMPORT_BYTES = 64 * 1024
     }
 }

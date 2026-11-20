@@ -19,11 +19,15 @@ object WifiSetup {
     /**
      * Builds an EAP-TLS suggestion that hands [privateKey] and [chain] to
      * Wi-Fi. Server validation needs both the CA certificates and the domain.
+     * With [notifyOnConnect], Wi-Fi sends this app
+     * `ACTION_WIFI_NETWORK_SUGGESTION_POST_CONNECTION` after connecting (if
+     * the app may read scan results).
      */
     fun suggestion(
         settings: NetworkSettings,
         privateKey: PrivateKey,
         chain: List<X509Certificate>,
+        notifyOnConnect: Boolean = false,
     ): WifiNetworkSuggestion {
         require(settings.ssid.isNotEmpty()) { "SSID is empty" }
         require(settings.identity.isNotEmpty()) { "Identity is empty" }
@@ -43,7 +47,9 @@ object WifiSetup {
             }
         }
 
-        val builder = WifiNetworkSuggestion.Builder().setSsid(settings.ssid)
+        val builder = WifiNetworkSuggestion.Builder()
+            .setSsid(settings.ssid)
+            .setIsAppInteractionRequired(notifyOnConnect)
         if (settings.wpa3) {
             builder.setWpa3EnterpriseStandardModeConfig(enterprise)
         } else {

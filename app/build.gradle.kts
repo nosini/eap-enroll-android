@@ -32,4 +32,6 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Android has org.json built in; the unit tests run on the JVM against a stub android.jar.
+    testImplementation("org.json:json:20260814")
 }

@@ -122,12 +122,15 @@ phone), which needs the user to pick "Wi-Fi" and add the network by hand.
 
 ## Later phases (only once phase 0 works)
 
+Built as described in [enrollment](enrollment.md), which has the details
+and what changed on the way.
+
 1. Enrollment: the app sends its CSR to a server and gets the certificate
    back. The first enrollment is authorized with a short-lived, single-use
    code (a QR code, for example), never a reusable OpenBao token. The
    server decides the CN, lifetime and role and ignores what the app asks
    for.
-2. Renewal: a WorkManager job that starts well before expiry (around 2/3 of
+2. Renewal: a background job (JobScheduler) that starts well before expiry (around 2/3 of
    the lifetime) and retries daily. The app can't use the Wi-Fi key after
    handing it over, so every renewal is a new key: new key, new
    certificate, replace the suggestion, check that it connects. The old

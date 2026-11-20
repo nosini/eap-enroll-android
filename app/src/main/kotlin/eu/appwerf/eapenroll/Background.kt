@@ -1,0 +1,165 @@
+package eu.appwerf.eapenroll
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.job.JobInfo
+import android.app.job.JobParameters
+import android.app.job.JobScheduler
+import android.app.job.JobService
+import android.content.BroadcastReceiver
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSuggestion
+import android.os.Build
+import android.util.Log
+import java.text.DateFormat
+import java.util.concurrent.TimeUnit
+
+/**
+ * Background work with the platform JobScheduler: a daily check that renews
+ * what is due (and so retries daily), and a one-off run as soon as a
+ * network is available, after a confirmed connection or a failed request.
+ */
+object Jobs {
+    private const val DAILY = 1
+    private const val SOON = 2
+
+    fun scheduleDaily(context: Context) {
+        val scheduler = context.getSystemService(JobScheduler::class.java)
+        if (scheduler.getPendingJob(DAILY) != null) return
+        val job = JobInfo.Builder(DAILY, ComponentName(context, RenewJobService::class.java))
+            .setPeriodic(TimeUnit.DAYS.toMillis(1), TimeUnit.HOURS.toMillis(6))
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setPersisted(true)
+            .build()
+        scheduler.schedule(job)
+    }
+
+    fun runSoon(context: Context) {
+        val job = JobInfo.Builder(SOON, ComponentName(context, RenewJobService::class.java))
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setBackoffCriteria(TimeUnit.MINUTES.toMillis(30), JobInfo.BACKOFF_POLICY_EXPONENTIAL)
+            .setPersisted(true)
+            .build()
+        context.getSystemService(JobScheduler::class.java).schedule(job)
+    }
+
+    fun cancelAll(context: Context) {
+        context.getSystemService(JobScheduler::class.java).cancelAll()
+    }
+
+    /** Whether [params] is the one-off run, which retries with backoff. */
+    fun isSoon(params: JobParameters) = params.jobId == SOON
+}
+
+class RenewJobService : JobService() {
+    override fun onStartJob(params: JobParameters): Boolean {
+        Thread {
+            val outcome = try {
+                Enrollment.enroller(this).maintain()
+            } catch (e: Exception) {
+                Log.w(Enrollment.TAG, "Background renewal failed", e)
+                Enroller.Outcome.RETRY
+            }
+            Log.i(Enrollment.TAG, "Background check: $outcome")
+            Notifier.update(this)
+            jobFinished(params, outcome == Enroller.Outcome.RETRY && Jobs.isSoon(params))
+        }.start()
+        return true
+    }
+
+    override fun onStopJob(params: JobParameters): Boolean = true
+}
+
+/**
+ * Wi-Fi connected through this app's suggestion. Sent only for suggestions
+ * built with `setIsAppInteractionRequired(true)`, and only while the app may
+ * read scan results (precise location, location on; in the background only
+ * with "Allow all the time"). Not exported: only the system can send it.
+ */
+class ConnectionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != WifiManager.ACTION_WIFI_NETWORK_SUGGESTION_POST_CONNECTION) return
+        val at = System.currentTimeMillis()
+        val suggestion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_SUGGESTION, WifiNetworkSuggestion::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_SUGGESTION)
+        }
+        val pending = goAsync()
+        Thread {
+            try {
+                val enroller = Enrollment.enroller(context)
+                val ssid = enroller.state()?.profile?.ssid
+                Log.i(Enrollment.TAG, "Post-connection broadcast for '${suggestion?.ssid}'")
+                // getSsid() returns the plain SSID; tolerate quotes all the same.
+                val connected = suggestion?.ssid?.removeSurrounding("\"")
+                if (ssid != null && connected == ssid && enroller.connectionObserved(at)) {
+                    Jobs.runSoon(context)
+                }
+            } catch (e: Exception) {
+                Log.w(Enrollment.TAG, "Handling the connection broadcast failed", e)
+            } finally {
+                pending.finish()
+            }
+        }.start()
+    }
+}
+
+/** A single notification for problems the user has to act on, or a certificate close to expiry. */
+object Notifier {
+    private const val CHANNEL = "renewal"
+    private const val ID = 1
+
+    fun update(context: Context) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val text = attentionText(Enrollment.enroller(context).state(), System.currentTimeMillis())
+        if (text == null) {
+            manager.cancel(ID)
+            return
+        }
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL, "Certificate renewal", NotificationManager.IMPORTANCE_DEFAULT),
+        )
+        val open = PendingIntent.getActivity(
+            context, 0,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(context, CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle("Wi-Fi certificate")
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        // Without the notification permission (Android 13+) this is dropped silently.
+        manager.notify(ID, notification)
+    }
+
+    /** What needs the user's attention, or null. */
+    fun attentionText(state: EnrollmentState?, now: Long): String? {
+        if (state == null) return null
+        when (state.problem) {
+            Problem.NEEDS_SETUP -> return "The enrollment server no longer accepts this phone. Set it up again with a new link."
+            Problem.DISABLED -> return "This phone was disabled on the enrollment server."
+            null -> {}
+        }
+        val date = DateFormat.getDateInstance()
+        val wifi = state.wifiChain?.get(0)
+        if (wifi != null && Certs.expiryWarning(wifi, now)) {
+            return "The Wi-Fi certificate expires on ${date.format(wifi.notAfter)} and renewing it failed: ${state.lastError ?: "not tried yet"}"
+        }
+        val device = state.deviceChain[0]
+        if (Certs.expiryWarning(device, now)) {
+            return "The enrollment credential expires on ${date.format(device.notAfter)} and renewing it failed: ${state.lastError ?: "not tried yet"}"
+        }
+        return null
+    }
+}

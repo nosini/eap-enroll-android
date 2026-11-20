@@ -11,6 +11,9 @@ object Pem {
         return "-----BEGIN $type-----\n$body\n-----END $type-----\n"
     }
 
+    fun encodeChain(certs: List<X509Certificate>): String =
+        certs.joinToString("") { encode("CERTIFICATE", it.encoded) }
+
     /** Parses one or more PEM (or DER) certificates, in file order. */
     fun certificates(data: ByteArray): List<X509Certificate> {
         val factory = CertificateFactory.getInstance("X.509")

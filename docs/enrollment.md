@@ -223,6 +223,12 @@ Found and fixed on the way:
 
 ### Still to test
 
+Against the harness with `-attestation-roots` (key attestation required):
+
+- That the phone generates an attested device key in StrongBox, and that
+  the server accepts it for setup and for a renewal (with `-device-ttl 1h`
+  the renewal is due after 40 minutes).
+
 On the real network, once the server is deployed:
 
 - That the RADIUS server accepts the enrolled certificate and the phone

@@ -9,6 +9,9 @@
 // 127.x.y.z source address for every connection, so the server's per-address
 // rate limits don't slow the tests down.
 //
+// With -attestation-roots the server requires Android hardware key
+// attestation for device credentials; only a real phone can pass that.
+//
 // Control requests:
 //
 //	POST /code?user=U&label=L   new one-time code; the body is the setup URI
@@ -219,6 +222,8 @@ func main() {
 	dir := flag.String("dir", "", "empty working directory")
 	bin := flag.String("eap-enroll", "", "eap-enroll binary")
 	publicPort := flag.Int("public-port", 0, "port on 127.0.0.1 for clients (default: any free port)")
+	deviceTTL := flag.String("device-ttl", "8760h", "device credential lifetime (at least 1h; renewal is due at 2/3)")
+	attestationRoots := flag.String("attestation-roots", "", "require Android key attestation, trusting the roots in this PEM file (eap-enroll-server's deploy/attestation-roots.pem)")
 	flag.Parse()
 	if *dir == "" || *bin == "" {
 		flag.Usage()
@@ -271,7 +276,7 @@ func main() {
 		"device_cacerts_file": write(d, "device-cacerts.pem", pemCert(deviceCA.cert, root.cert)),
 		"database":            filepath.Join(d, "enroll.db"),
 		"wifi_ttl":            "1440h",
-		"device_ttl":          "8760h",
+		"device_ttl":          *deviceTTL,
 		"wifi_profile": map[string]any{
 			"ssid":           "Example Net ",
 			"server_domain":  "radius.example.org",
@@ -283,6 +288,10 @@ func main() {
 			"role_id_file":   write(d, "role-id", roleID+"\n"),
 			"secret_id_file": write(d, "secret-id", secretID+"\n"),
 		},
+	}
+	if *attestationRoots != "" {
+		// Offline: no revocation status list.
+		cfg["key_attestation"] = map[string]any{"roots_file": must(filepath.Abs(*attestationRoots))}
 	}
 	config := write(d, "config.json", string(must(json.MarshalIndent(cfg, "", "  "))))
 

@@ -4,6 +4,7 @@ import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyPair
 import java.security.KeyPairGenerator
+import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.cert.X509Certificate
@@ -12,10 +13,17 @@ import org.json.JSONObject
 
 /** Keys for the device credential: non-exportable, in the platform keystore on a phone. */
 interface DeviceKeys {
-    /** Generates a new EC key pair and returns its alias. */
-    fun create(): String
+    /**
+     * Generates a new EC key pair and returns its alias. With [challenge],
+     * the key gets a hardware key attestation for that challenge if the
+     * phone can make one; otherwise it is generated without.
+     */
+    fun create(challenge: ByteArray? = null): String
 
     fun keyPair(alias: String): KeyPair
+
+    /** The key's attestation chain (DER, leaf first), or null if it has none. */
+    fun attestation(alias: String): List<ByteArray>?
 
     fun delete(alias: String)
 }
@@ -136,11 +144,13 @@ class Enroller(
      */
     fun setup(link: SetupUri): Outcome = synchronized(LOCK) {
         log("Setting up with ${link.serverUrl}")
-        val alias = keys.create()
+        // The server checks attestation against the code as sent in the
+        // Authorization header.
+        val alias = keys.create(challenge = sha256(link.code.toByteArray(Charsets.US_ASCII)))
         val chain = try {
             val keyPair = keys.keyPair(alias)
             val chain = EstClient(link.serverUrl, link.caFingerprint)
-                .enrollDevice(link.code, Csr.create(keyPair, "eap-enroll"))
+                .enrollDevice(link.code, Csr.create(keyPair, "eap-enroll"), keys.attestation(alias))
             checkIssued(chain, keyPair.public)
             chain
         } catch (e: Exception) {
@@ -265,11 +275,14 @@ class Enroller(
 
     private fun renewDeviceCredential(state: EnrollmentState): EnrollmentState {
         log("Renewing the device credential")
-        val alias = keys.create()
+        // Always a new key: an attestation challenge is fixed when the key is
+        // generated, and the server wants the hash of the credential
+        // presented in this request.
+        val alias = keys.create(challenge = sha256(state.deviceChain[0].encoded))
         val chain = try {
             val keyPair = keys.keyPair(alias)
             val identity = Certs.commonName(state.deviceChain[0]).ifEmpty { "eap-enroll" }
-            val chain = client(state).reenrollDevice(Csr.create(keyPair, identity))
+            val chain = client(state).reenrollDevice(Csr.create(keyPair, identity), keys.attestation(alias))
             checkIssued(chain, keyPair.public)
             chain
         } catch (e: Exception) {
@@ -325,6 +338,8 @@ class Enroller(
 
         /** Connections reported this soon after installing a certificate may predate it. */
         const val INSTALL_SETTLE_MS = 10_000L
+
+        private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
     }
 }
 

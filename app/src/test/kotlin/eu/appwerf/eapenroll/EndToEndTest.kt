@@ -4,13 +4,13 @@ import java.io.File
 import java.math.BigInteger
 import java.net.HttpURLConnection
 import java.net.URL
-import java.security.KeyPair
 import java.security.MessageDigest
-import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.security.interfaces.ECPrivateKey
+import java.util.Base64
 import javax.net.ssl.SSLException
 import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -29,44 +29,6 @@ import org.junit.Test
 class EndToEndTest {
     private val control: String? = System.getenv("EAP_ENROLL_E2E_CONTROL")
         ?: File("../build/e2e/run/control").takeIf { it.exists() }?.readText()?.trim()
-
-    private class MemoryKeys : DeviceKeys {
-        val keys = HashMap<String, KeyPair>()
-        private var next = 0
-
-        override fun create(): String {
-            val alias = "device-${next++}"
-            keys[alias] = TestPki.keyPair("secp256r1")
-            return alias
-        }
-
-        override fun keyPair(alias: String) = keys[alias] ?: throw IllegalStateException("no key $alias")
-
-        override fun delete(alias: String) {
-            keys.remove(alias)
-        }
-    }
-
-    /** Stores JSON, so every step also goes through the state serialisation. */
-    private class MemoryStore : StateStore {
-        var json: String? = null
-
-        override fun load() = json?.let { EnrollmentState.fromJson(JSONObject(it)) }
-
-        override fun save(state: EnrollmentState?) {
-            json = state?.toJson()?.toString()
-        }
-    }
-
-    private class Install(val profile: WifiProfile, val identity: String, val key: PrivateKey, val chain: List<X509Certificate>)
-
-    private class RecordingWifi : WifiInstaller {
-        val installs = ArrayList<Install>()
-
-        override fun install(profile: WifiProfile, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
-            installs += Install(profile, identity, privateKey, chain)
-        }
-    }
 
     private val keys = MemoryKeys()
     private val store = MemoryStore()
@@ -101,7 +63,10 @@ class EndToEndTest {
 
     @Test
     fun lifecycle() {
-        assertEquals(Enroller.Outcome.OK, enroller.setup(code()))
+        val link = code()
+        assertEquals(Enroller.Outcome.OK, enroller.setup(link))
+        // The device key's attestation challenge is the hash of the code.
+        assertArrayEquals(sha256(link.code.toByteArray()), keys.challenges.single())
         var state = store.load()!!
         assertEquals("alice", Certs.commonName(state.deviceChain[0]))
         assertTrue(deviceId(state.deviceChain[0]).isNotEmpty())
@@ -142,10 +107,13 @@ class EndToEndTest {
         // 300 days later both are due: a new device key, then a Wi-Fi certificate with it.
         val oldAlias = state.deviceAlias
         val oldDevice = state.deviceChain[0].serialNumber
+        val oldDeviceDer = state.deviceChain[0].encoded
         now += 300L * 86_400_000
         assertEquals(Enroller.Outcome.OK, enroller.maintain())
         state = store.load()!!
         assertNotEquals(oldAlias, state.deviceAlias)
+        // The new key's challenge is the hash of the credential it replaces.
+        assertArrayEquals(sha256(oldDeviceDer), keys.challenges.last())
         assertNull(state.previousDeviceAlias)
         assertEquals(setOf(state.deviceAlias), keys.keys.keys)
         assertTrue(oldDevice in revoked("pki-enroll"))
@@ -191,5 +159,16 @@ class EndToEndTest {
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(renewWifi = true))
         assertEquals(Problem.DISABLED, store.load()!!.problem)
         assertEquals(1, wifi.installs.size)
+    }
+}
+
+class AttestationHeaderTest {
+    @Test
+    fun concatenatedDerInOneLine() {
+        val a = ByteArray(100) { 1 }
+        val b = ByteArray(200) { 2 }
+        val header = EstClient.attestationHeader(listOf(a, b))
+        assertFalse(header.contains('\n') || header.contains('\r'))
+        assertArrayEquals(a + b, Base64.getDecoder().decode(header))
     }
 }

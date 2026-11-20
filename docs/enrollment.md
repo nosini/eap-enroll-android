@@ -29,6 +29,29 @@ The device key allows the digests SHA-256 (for the CSR) and NONE: the
 platform TLS stack (Conscrypt) hashes the handshake itself and signs the
 digest with `NONEwithECDSA`.
 
+### Key attestation
+
+The server can require Android hardware key attestation for the device
+key, proving that it was generated in the phone's TEE or StrongBox. The
+setup link doesn't say whether it does, so the app always attests: it
+generates every device key with an attestation challenge and sends the
+key's attestation chain in a `Key-Attestation` header (standard base64 of
+the concatenated DER certificates, leaf first). A server that doesn't
+require attestation ignores the header.
+
+- Setup: the challenge is SHA-256 of the one-time code as sent in
+  `Authorization: Bearer`.
+- Renewal: SHA-256 of the DER of the device credential the request is
+  authenticated with. The challenge is fixed when the key is generated,
+  which is why every renewal uses a new key.
+- Order of attempts: StrongBox with attestation, TEE with attestation, then
+  without attestation (StrongBox, TEE). Attestation can fail for a while,
+  for example before the phone has remotely provisioned attestation keys. A
+  server that requires attestation then refuses the request (400,
+  `bad_attestation`) and the app tries again later; a refused attestation
+  doesn't use up the one-time code.
+- The app's status shows where the key is and whether it is attested.
+
 ## Setup
 
 The administrator runs `eap-enroll code` on the server, which prints a
@@ -49,8 +72,8 @@ eapenroll://setup?ca=<SHA-256 hex>&code=<one-time code>&url=https://enroll.examp
 
 Then the app:
 
-1. generates the device key and sends a CSR for it with the code
-   (`device/simpleenroll`);
+1. generates the device key (with an attestation for the code) and sends a
+   CSR for it with the code (`device/simpleenroll`);
 2. fetches the Wi-Fi profile (`wifi/profile`: SSID, RADIUS server name and
    CA certificates), so no network settings have to be typed in;
 3. gets the first Wi-Fi certificate (`wifi/simpleenroll`) and installs it
@@ -69,10 +92,10 @@ restarts, needs a network) does whatever is due:
   a new certificate, and the suggestion is replaced. Adding a suggestion
   with the same SSID and security type replaces the old one and its key in
   Wi-Fi's keystore (AOSP `WifiNetworkSuggestionsManager.add()`).
-- At 2/3 of the device credential's lifetime: a new Keystore key and
-  `device/simplereenroll`. The app then uses the new credential once
-  (`wifi/profile`), which makes the server revoke the old one, and deletes
-  the old key.
+- At 2/3 of the device credential's lifetime: a new Keystore key (attested
+  for the current credential) and `device/simplereenroll`. The app then
+  uses the new credential once (`wifi/profile`), which makes the server
+  revoke the old one, and deletes the old key.
 - A failed request is retried by the next daily run, and a run started
   from the app is retried with backoff.
 - 401 means the server no longer accepts the device credential (a new
@@ -130,6 +153,8 @@ All met by eap-enroll-server:
 - Disabling a device stops it from getting certificates at once, and
   revokes the device's Wi-Fi certificates.
 - It accepts EC P-384 Wi-Fi keys and EC P-256 or P-384 device keys.
+- It can require hardware key attestation for device keys
+  (`key_attestation`), checked offline against Google's attestation roots.
 
 ## Proposals for the server
 

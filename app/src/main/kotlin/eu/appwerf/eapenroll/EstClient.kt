@@ -34,13 +34,21 @@ class EstClient(
     private val base = SetupUri.normalizeServerUrl(serverUrl) + "/.well-known/est/"
     private val socketFactory: SSLSocketFactory = EstTls.socketFactory(caFingerprint, credential)
 
-    /** Device credential for the Keystore key in [csr], authorized by the one-time [code]. */
-    fun enrollDevice(code: String, csr: ByteArray): List<X509Certificate> =
-        certificates(post("device/simpleenroll", PKCS10, encodeCsr(csr), bearer = code))
+    /**
+     * Device credential for the Keystore key in [csr], authorized by the
+     * one-time [code]. [attestation] is the key's attestation chain (DER,
+     * leaf first), generated with SHA-256 of [code] as the challenge.
+     */
+    fun enrollDevice(code: String, csr: ByteArray, attestation: List<ByteArray>? = null): List<X509Certificate> =
+        certificates(post("device/simpleenroll", PKCS10, encodeCsr(csr), bearer = code, headers = attestationHeaders(attestation)))
 
-    /** New device credential; authenticated with the current one. */
-    fun reenrollDevice(csr: ByteArray): List<X509Certificate> =
-        certificates(post("device/simplereenroll", PKCS10, encodeCsr(csr)))
+    /**
+     * New device credential; authenticated with the current one.
+     * [attestation] is the new key's attestation chain, generated with
+     * SHA-256 of the current credential's certificate as the challenge.
+     */
+    fun reenrollDevice(csr: ByteArray, attestation: List<ByteArray>? = null): List<X509Certificate> =
+        certificates(post("device/simplereenroll", PKCS10, encodeCsr(csr), headers = attestationHeaders(attestation)))
 
     /** Wi-Fi certificate for the (new) key in [csr]. */
     fun enrollWifi(csr: ByteArray): List<X509Certificate> =
@@ -65,8 +73,16 @@ class EstClient(
 
     private class Response(val status: Int, val contentType: String?, val body: ByteArray)
 
-    private fun post(path: String, contentType: String, body: ByteArray, bearer: String? = null): Response =
-        request("POST", path, contentType, body, bearer)!!
+    private fun post(
+        path: String,
+        contentType: String,
+        body: ByteArray,
+        bearer: String? = null,
+        headers: Map<String, String> = emptyMap(),
+    ): Response = request("POST", path, contentType, body, bearer, headers = headers)!!
+
+    private fun attestationHeaders(chain: List<ByteArray>?): Map<String, String> =
+        chain?.let { mapOf("Key-Attestation" to attestationHeader(it)) } ?: emptyMap()
 
     private fun request(
         method: String,
@@ -75,6 +91,7 @@ class EstClient(
         body: ByteArray?,
         bearer: String?,
         allowNotFound: Boolean = false,
+        headers: Map<String, String> = emptyMap(),
     ): Response? {
         val connection = URL(base + path).openConnection() as HttpsURLConnection
         try {
@@ -86,6 +103,7 @@ class EstClient(
             connection.requestMethod = method
             connection.setRequestProperty("Accept", "*/*")
             bearer?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
+            headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
             if (body != null) {
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", contentType)
@@ -135,9 +153,17 @@ class EstClient(
 
     private fun encodeCsr(der: ByteArray): ByteArray = Base64.getEncoder().encode(der)
 
-    private companion object {
-        const val PKCS10 = "application/pkcs10"
-        const val TIMEOUT_MS = 30_000
-        const val MAX_RESPONSE = 256 * 1024
+    companion object {
+        private const val PKCS10 = "application/pkcs10"
+        private const val TIMEOUT_MS = 30_000
+        private const val MAX_RESPONSE = 256 * 1024
+
+        /** The `Key-Attestation` header: standard base64, one line, of the concatenated DER certificates. */
+        fun attestationHeader(chain: List<ByteArray>): String {
+            require(chain.isNotEmpty()) { "Empty attestation chain" }
+            val all = ByteArrayOutputStream()
+            chain.forEach { all.write(it) }
+            return Base64.getEncoder().encodeToString(all.toByteArray())
+        }
     }
 }

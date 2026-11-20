@@ -380,7 +380,7 @@ class MainActivity : Activity() {
         lines += "Server: ${state.serverUrl}"
         val device = state.deviceChain[0]
         lines += "Device credential: ${Certs.commonName(device)}, valid until ${date.format(device.notAfter)} " +
-            "(key in ${deviceKeys.describe(state.deviceAlias)})"
+            "(key in ${deviceKeys.describeWithAttestation(state.deviceAlias)})"
         state.profile?.let {
             lines += "Network: '${it.ssid}', server ${it.serverDomain}, " +
                 if (prefs.getBoolean(NetworkPrefs.WPA3, false)) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"

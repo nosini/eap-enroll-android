@@ -10,8 +10,10 @@ import android.util.Log
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.PrivateKey
+import java.security.ProviderException
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.util.UUID
@@ -20,26 +22,59 @@ import org.json.JSONObject
 /**
  * Device credential keys in the Android Keystore: EC P-256, non-exportable,
  * in StrongBox if the phone has it (StrongBox usually lacks P-384).
+ *
+ * With a challenge, the key gets a hardware key attestation, which the
+ * server may require. Tried in this order: StrongBox with attestation, TEE
+ * with attestation, then without attestation (StrongBox, TEE). Attestation
+ * can fail for reasons that pass, e.g. while the phone has no remotely
+ * provisioned attestation keys; a server that requires it then refuses the
+ * request and the app retries later.
  */
 class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
-    override fun create(): String {
+    override fun create(challenge: ByteArray?): String {
         val alias = PREFIX + UUID.randomUUID()
-        try {
-            generate(alias, strongBox = true)
-        } catch (e: StrongBoxUnavailableException) {
-            generate(alias, strongBox = false)
+        val attempts = buildList {
+            if (challenge != null) {
+                add(true to challenge)
+                add(false to challenge)
+            }
+            add(true to null)
+            add(false to null)
         }
-        log("Device key generated (${describe(alias)})")
-        return alias
+        var strongBoxAvailable = true
+        var failure: Exception? = null
+        for ((strongBox, attestationChallenge) in attempts) {
+            if (strongBox && !strongBoxAvailable) continue
+            val error: Exception = try {
+                generate(alias, strongBox, attestationChallenge)
+                val attested = attestation(alias)?.let { "attested, chain of ${it.size}" } ?: "not attested"
+                log("Device key generated (${describe(alias)}, $attested)")
+                return alias
+            } catch (e: StrongBoxUnavailableException) {
+                strongBoxAvailable = false
+                runCatching { delete(alias) }
+                continue
+            } catch (e: GeneralSecurityException) {
+                e
+            } catch (e: ProviderException) {
+                e
+            }
+            failure = error
+            log("Generating the device key in ${if (strongBox) "StrongBox" else "the TEE"} " +
+                "${if (attestationChallenge != null) "with" else "without"} attestation failed: ${Errors.describe(error)}")
+            runCatching { delete(alias) }
+        }
+        throw failure ?: IllegalStateException("No way to generate the device key")
     }
 
-    private fun generate(alias: String, strongBox: Boolean) {
+    private fun generate(alias: String, strongBox: Boolean, challenge: ByteArray?) {
         val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
             .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
             // SHA-256 for the CSR; NONE because the TLS stack hashes itself
             // and signs the digest with NONEwithECDSA.
             .setDigests(KeyProperties.DIGEST_NONE, KeyProperties.DIGEST_SHA256)
             .setIsStrongBoxBacked(strongBox)
+            .apply { challenge?.let { setAttestationChallenge(it) } }
             .build()
         KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEYSTORE).run {
             initialize(spec)
@@ -53,6 +88,10 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
         return KeyPair(entry.certificate.publicKey, entry.privateKey)
     }
 
+    /** A key generated without a challenge has only a self-signed certificate. */
+    override fun attestation(alias: String): List<ByteArray>? =
+        keyStore().getCertificateChain(alias)?.takeIf { it.size > 1 }?.map { it.encoded }
+
     override fun delete(alias: String) {
         keyStore().deleteEntry(alias)
     }
@@ -62,6 +101,10 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
         val store = keyStore()
         store.aliases().toList().filter { it.startsWith(PREFIX) && it !in keep }.forEach { store.deleteEntry(it) }
     }
+
+    /** Where the key lives (StrongBox, TEE or software), and whether it is attested. */
+    fun describeWithAttestation(alias: String): String =
+        describe(alias) + if (attestation(alias) != null) ", attested" else ", not attested"
 
     /** Where the key lives: StrongBox, TEE or software. */
     fun describe(alias: String): String = try {

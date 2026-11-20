@@ -200,3 +200,30 @@ class AttestationHeaderTest {
         assertEquals("EstException: HTTP 500: internal error", Errors.describe(EstException(500, "internal error")))
     }
 }
+
+class ManualWifiRenewalTest {
+    private val ca = TestPki.root("Test CA")
+    private val day = 86_400_000L
+    private val now = System.currentTimeMillis()
+    private val wifi = TestPki.leaf(ca, "alice", notBefore = Date(now - day), notAfter = Date(now + 59 * day))
+    private val state = EnrollmentState(
+        "https://enroll.example.org", "ab".repeat(32), "device-1", listOf(TestPki.leaf(ca, "alice")),
+        wifiChain = listOf(wifi), confirmPending = true,
+    )
+
+    @Test
+    fun refusedWhileUnconfirmed() {
+        assertNotNull(Enroller.manualWifiRenewalRefusal(state, now))
+    }
+
+    @Test
+    fun allowedOtherwise() {
+        assertNull(Enroller.manualWifiRenewalRefusal(null, now))
+        assertNull(Enroller.manualWifiRenewalRefusal(state.copy(wifiChain = null), now))
+        assertNull(Enroller.manualWifiRenewalRefusal(state.copy(confirmPending = false), now))
+        // Connected with it: the check confirms it before renewing.
+        assertNull(Enroller.manualWifiRenewalRefusal(state.copy(connectedAfterInstall = true), now))
+        // Due anyway.
+        assertNull(Enroller.manualWifiRenewalRefusal(state, now + 45 * day))
+    }
+}

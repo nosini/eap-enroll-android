@@ -98,6 +98,11 @@ restarts, needs a network) does whatever is due:
   revoke the old one, and deletes the old key.
 - A failed request is retried by the next daily run, and a run started
   from the app or after a connection is retried with backoff.
+- "Get a new Wi-Fi certificate now" refuses while the current certificate
+  isn't confirmed yet (and isn't due). Unconfirmed certificates stay valid,
+  and the server allows only a few valid ones per phone (5 on
+  eap-enroll-server); past that it refuses renewals, the automatic ones
+  included, until older certificates expire.
 
 What the app does with the server's refusals. The server names the reason
 in an `Enroll-Error` response header (see

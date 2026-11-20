@@ -421,6 +421,23 @@ class Enroller(
         private const val MAX_WAIT_S = 24 * 3600L
 
         private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
+
+        /**
+         * Why a Wi-Fi certificate asked for by the user should not be
+         * requested now, or null if it may. Every new certificate stays valid
+         * until it expires or a newer one is confirmed, and the server allows
+         * only a few valid ones per phone; past that it refuses renewals,
+         * the automatic ones included.
+         */
+        fun manualWifiRenewalRefusal(state: EnrollmentState?, now: Long): String? {
+            val wifi = state?.wifiChain?.get(0) ?: return null
+            if (state.problem != null || !state.confirmPending || state.connectedAfterInstall) return null
+            if (Certs.renewalDue(wifi, now)) return null
+            return "Not requesting a new Wi-Fi certificate: the current one isn't confirmed yet. " +
+                "The server keeps unconfirmed certificates valid and allows only a few per phone. " +
+                "Connect to the network with the current one first (see the status above); " +
+                "it is renewed automatically when due."
+        }
     }
 }
 

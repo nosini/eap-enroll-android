@@ -122,9 +122,7 @@ class MainActivity : Activity() {
         column.addView(button("Paste setup link") { pasteSetupLink() })
         column.addView(button("Set up with this link") { setUp() })
         column.addView(button("Check and renew now") { background("Checking") { enroller.maintain(byUser = true) } })
-        column.addView(button("Get a new Wi-Fi certificate now") {
-            background("Renewing") { enroller.maintain(renewWifi = true) }
-        })
+        column.addView(button("Get a new Wi-Fi certificate now") { renewWifiNow() })
         column.addView(button("Allow location (lets the app confirm renewals)") { requestLocation() })
         column.addView(button("Allow notifications") { requestNotifications() })
         column.addView(button("Open Wi-Fi panel") { startActivity(Intent(Settings.Panel.ACTION_WIFI)) })
@@ -290,6 +288,25 @@ class MainActivity : Activity() {
             runOnUiThread {
                 log(message)
                 refreshEnrollment()
+            }
+        }
+    }
+
+    /** Asks for a new Wi-Fi certificate unless unconfirmed ones would pile up on the server. */
+    private fun renewWifiNow() {
+        // The state is read on the worker: the enroller's lock may be held by a running request.
+        worker.execute {
+            val refusal = try {
+                Enroller.manualWifiRenewalRefusal(enroller.state(), System.currentTimeMillis())
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (refusal != null) {
+                    log(refusal)
+                } else {
+                    background("Renewing") { enroller.maintain(renewWifi = true, byUser = true) }
+                }
             }
         }
     }

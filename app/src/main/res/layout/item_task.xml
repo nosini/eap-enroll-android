@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/Card"
+    android:paddingBottom="12dp">
+
+    <TextView
+        android:id="@+id/task_title"
+        style="@style/Text.CardTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/task_text"
+        style="@style/Text.Body"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/task_dismiss"
+            style="@style/Button.Text"
+            android:text="@string/not_now" />
+
+        <Button
+            android:id="@+id/task_action"
+            style="@style/Button.Tonal"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+</LinearLayout>

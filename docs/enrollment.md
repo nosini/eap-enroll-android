@@ -63,7 +63,7 @@ eapenroll://setup?ca=<SHA-256 hex>&code=<one-time code>&url=https://enroll.examp
 
 - Scanning the QR code with the camera opens the link in the app (the app
   handles `eapenroll://setup`). The link only fills in the form; enrolling
-  needs a tap on "Set up with this link", so a link opened from elsewhere
+  needs a tap on "Set up", so a link opened from elsewhere
   can't enroll the phone by itself.
 - The link can also be pasted.
 - The app trusts only the CA with that fingerprint for the server, taken
@@ -104,7 +104,7 @@ restarts, needs a network) does whatever is due:
   the old certificate.
 - A failed request is retried by the next daily run, and a run started
   from the app or after a connection is retried with backoff.
-- "Get a new Wi-Fi certificate now" refuses while the current certificate
+- "Renew certificate" refuses while the current certificate
   isn't confirmed yet (and isn't due). Unconfirmed certificates stay valid,
   and the server allows only a few valid ones per phone (5 on
   eap-enroll-server); past that it refuses renewals, the automatic ones
@@ -118,7 +118,7 @@ disabled device.
 | --- | --- |
 | 401 | The server doesn't accept the device credential (unknown or expired): stops; needs a new setup link. |
 | 403 `device_disabled`, `credential_reuse` | The device is disabled: stops; needs a new setup link. |
-| 403 `user_disabled` | The account is disabled: stops background checks. "Check and renew now" tries again, since the account can be enabled again. |
+| 403 `user_disabled` | The account is disabled: stops background checks. "Check now" tries again, since the account can be enabled again. |
 | 403 `attestation_refused` | Only on device credential requests. At setup the app shows it; at renewal the current credential still works, so the app keeps it and the daily check tries again. |
 | 429 | Stores the time from `Retry-After` (15 minutes without one, at most a day) and sends nothing before it, not even for a check started by the user. A one-off job runs when the wait is over. |
 | 400 `bad_attestation`, 5xx, network errors | Retried later. |

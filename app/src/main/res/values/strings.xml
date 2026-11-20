@@ -1,4 +1,149 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">EAP Enroll</string>
+
+    <!-- Common -->
+    <string name="more_options">More options</string>
+    <string name="back">Back</string>
+    <string name="not_now">Not now</string>
+    <string name="cancel">Cancel</string>
+
+    <!-- Main screen menu -->
+    <string name="menu_wifi_settings">Wi-Fi settings</string>
+    <string name="menu_set_up_again">Set up with a new link</string>
+    <string name="menu_manual">Manual setup</string>
+    <string name="menu_log">Activity log</string>
+    <string name="menu_remove">Remove enrollment</string>
+
+    <!-- Setup -->
+    <string name="setup_title">Set up Wi-Fi</string>
+    <string name="setup_again_title">Set up again</string>
+    <string name="setup_text">Scan the QR code from the network\'s enrollment server with the camera, or copy its setup link and paste it here.</string>
+    <string name="setup_link_hint">Setup link</string>
+    <string name="paste_link">Paste link</string>
+    <string name="wpa3_only">WPA3-Enterprise only network</string>
+    <string name="wpa3_only_help">Turn on if the network accepts only WPA3-Enterprise devices.</string>
+    <string name="set_up">Set up</string>
+    <string name="manual_link">No enrollment server? Set up manually</string>
+    <string name="link_filled_in">Setup link for %1$s filled in. Tap Set up to continue.</string>
+    <string name="clipboard_empty">The clipboard is empty.</string>
+
+    <!-- Status -->
+    <string name="status_working">Working…</string>
+    <string name="status_ok_title">Wi-Fi is set up</string>
+    <string name="status_ok_text">Network %1$s. The certificate renews automatically from %2$s.</string>
+    <string name="status_unconfirmed_title">Certificate not confirmed yet</string>
+    <string name="status_confirming_title">Confirming the new certificate</string>
+    <string name="status_confirming_text">The phone connected with it; the app is telling the server.</string>
+    <string name="status_no_wifi_title">No Wi-Fi certificate yet</string>
+    <string name="status_no_wifi_text">Getting the first certificate didn\'t finish. Tap Check now to try again.</string>
+    <string name="status_wait_title">Waiting for the server</string>
+    <string name="status_wait_text">The server asked for no requests before %1$s.</string>
+    <string name="status_attention_title">Renewal needs attention</string>
+    <string name="status_stopped_title">This phone needs a new setup link</string>
+    <string name="status_user_disabled_title">Account disabled</string>
+    <string name="check_now">Check now</string>
+    <string name="renew_now">Renew certificate</string>
+
+    <string name="confirm_hint_location">Allow location, then turn Wi-Fi off and on while the app is open.</string>
+    <string name="confirm_hint_foreground">Turn Wi-Fi off and on while the app is open, or allow location all the time.</string>
+    <string name="confirm_hint_background">This happens on the next Wi-Fi connection.</string>
+    <string name="confirm_explained">Older certificates stay valid until the server hears that the new one works.</string>
+
+    <!-- Results -->
+    <string name="result_set_up">Set up. If Android asks whether to allow the suggested network, allow it.</string>
+    <string name="result_renewed">New Wi-Fi certificate installed. It\'s used from the next connection.</string>
+    <string name="result_up_to_date">Everything is up to date.</string>
+    <string name="result_retry">The server couldn\'t be reached; the app tries again soon.</string>
+    <string name="result_later">The server refused the request; the daily check tries again.</string>
+    <string name="result_wait">The server asked to wait until %1$s.</string>
+    <string name="result_failed">Failed: %1$s</string>
+
+    <!-- Tasks -->
+    <string name="task_approve_title">Allow the network</string>
+    <string name="task_approve_text">Android connects to networks suggested by apps only after you allow it. Allow EAP Enroll\'s network in the notification, or select it once in Wi-Fi settings.</string>
+    <string name="task_approve_action">Open Wi-Fi settings</string>
+    <string name="task_location_title">Let the app confirm renewals</string>
+    <string name="task_location_text">Android tells an app that its network connected only if the app may use location. Without it, renewed certificates aren\'t confirmed and older ones stay valid until they expire.</string>
+    <string name="task_location_action">Allow location</string>
+    <string name="task_background_title">Confirm renewals in the background</string>
+    <string name="task_background_text">With location allowed all the time, renewals are confirmed without opening the app.</string>
+    <string name="task_background_action">Allow all the time</string>
+    <string name="task_notifications_title">Get renewal warnings</string>
+    <string name="task_notifications_text">The app warns when a certificate is close to expiring and renewing it failed.</string>
+    <string name="task_notifications_action">Allow notifications</string>
+
+    <!-- Details -->
+    <string name="details">Details</string>
+    <string name="detail_network">Network</string>
+    <string name="detail_username">Username</string>
+    <string name="detail_wifi_cert">Wi-Fi certificate</string>
+    <string name="detail_device_cert">Enrollment credential</string>
+    <string name="detail_server">Enrollment server</string>
+    <string name="detail_last_check">Last successful check</string>
+    <string name="detail_last_error">Last error</string>
+    <string name="security_wpa3">WPA3-Enterprise only</string>
+    <string name="security_wpa2_wpa3">WPA2/WPA3-Enterprise</string>
+    <string name="wifi_cert_value">Valid until %1$s\nRenews from %2$s</string>
+    <string name="wifi_cert_confirmed">Confirmed; older certificates are revoked</string>
+    <string name="wifi_cert_unconfirmed">Not confirmed yet</string>
+    <string name="device_cert_value">Valid until %1$s</string>
+    <string name="device_key_value">Key in %1$s</string>
+    <string name="never">Never</string>
+
+    <!-- Remove -->
+    <string name="remove_title">Remove enrollment?</string>
+    <string name="remove_text">This removes the network from Wi-Fi and deletes this phone\'s keys and certificates. Nothing is revoked on the server: ask the administrator to disable this phone.</string>
+    <string name="remove">Remove</string>
+    <string name="removed">Enrollment removed.</string>
+
+    <!-- Log -->
+    <string name="log_title">Activity log</string>
+    <string name="copy">Copy</string>
+    <string name="log_empty">Nothing yet.</string>
+    <string name="copied">Copied.</string>
+
+    <!-- Manual setup -->
+    <string name="manual_title">Manual setup</string>
+    <string name="manual_intro">Without an enrollment server: the app makes a key and a certificate request (CSR), the network\'s CA signs it, and the app hands key and certificate to Wi-Fi. Manual certificates aren\'t renewed.</string>
+    <string name="step_1">Step 1</string>
+    <string name="step_2">Step 2</string>
+    <string name="step_3">Step 3</string>
+    <string name="step_4">Step 4</string>
+    <string name="step_5">Step 5</string>
+    <string name="manual_network">Network</string>
+    <string name="ssid">SSID</string>
+    <string name="ssid_help">Exactly as broadcast, including any spaces.</string>
+    <string name="identity">Username (EAP identity)</string>
+    <string name="domain">RADIUS server domain</string>
+    <string name="domain_hint" translatable="false">radius.example.org</string>
+    <string name="ca_certificate">CA certificate</string>
+    <string name="ca_help">The CA that signed the RADIUS server\'s certificate (PEM).</string>
+    <string name="import_ca">Import CA certificate</string>
+    <string name="no_ca">None imported.</string>
+    <string name="manual_key">Key and certificate request</string>
+    <string name="curve_p384">P-384</string>
+    <string name="curve_p256">P-256</string>
+    <string name="generate">Generate key and CSR</string>
+    <string name="share">Share</string>
+    <string name="save">Save</string>
+    <string name="no_key">No key yet.</string>
+    <string name="key_stored">Key stored (encrypted). Public key SHA-256 %1$s…</string>
+    <string name="manual_certificate">Signed certificate</string>
+    <string name="import_file">Import file</string>
+    <string name="paste">Paste</string>
+    <string name="no_certificate">None imported.</string>
+    <string name="manual_wifi">Add to Wi-Fi</string>
+    <string name="manual_wifi_text">As a suggestion, Android connects on its own and asks once to allow it. Through Settings, it becomes a normal saved network.</string>
+    <string name="add_suggestion">Add network</string>
+    <string name="save_through_settings">Save through Settings</string>
+    <string name="list_suggestions">List networks</string>
+    <string name="remove_suggestions">Remove networks</string>
+    <string name="manual_cleanup">Clean up</string>
+    <string name="manual_cleanup_text">Once the phone has connected, delete the app\'s copy of the key. Wi-Fi keeps its own.</string>
+    <string name="delete_key">Delete key and certificate</string>
+
+    <!-- Notifications -->
+    <string name="channel_renewal">Certificate renewal</string>
+    <string name="notification_title">Wi-Fi certificate</string>
 </resources>

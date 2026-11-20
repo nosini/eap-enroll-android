@@ -1,0 +1,363 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <include layout="@layout/top_bar_back" />
+
+    <ScrollView
+        android:id="@+id/scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:paddingBottom="24dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp">
+
+            <TextView
+                style="@style/Text.Body"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="@string/manual_intro" />
+
+            <!-- 1: network -->
+            <LinearLayout style="@style/Card">
+
+                <TextView
+                    style="@style/Text.Step"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_1" />
+
+                <TextView
+                    style="@style/Text.CardTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/manual_network" />
+
+                <TextView
+                    style="@style/FieldLabel"
+                    android:labelFor="@+id/ssid"
+                    android:text="@string/ssid" />
+
+                <EditText
+                    android:id="@+id/ssid"
+                    style="@style/Field"
+                    android:layout_marginTop="6dp"
+                    android:importantForAutofill="no"
+                    android:inputType="textVisiblePassword|textNoSuggestions" />
+
+                <TextView
+                    style="@style/Text.Body"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/ssid_help"
+                    android:textSize="13sp" />
+
+                <TextView
+                    style="@style/FieldLabel"
+                    android:labelFor="@+id/identity"
+                    android:text="@string/identity" />
+
+                <EditText
+                    android:id="@+id/identity"
+                    style="@style/Field"
+                    android:layout_marginTop="6dp"
+                    android:importantForAutofill="no"
+                    android:inputType="textEmailAddress|textNoSuggestions" />
+
+                <TextView
+                    style="@style/FieldLabel"
+                    android:labelFor="@+id/domain"
+                    android:text="@string/domain" />
+
+                <EditText
+                    android:id="@+id/domain"
+                    style="@style/Field"
+                    android:layout_marginTop="6dp"
+                    android:hint="@string/domain_hint"
+                    android:importantForAutofill="no"
+                    android:inputType="textUri|textNoSuggestions" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        style="@style/Text.Value"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/wpa3_only"
+                        android:textIsSelectable="false" />
+
+                    <Switch
+                        android:id="@+id/wpa3"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:contentDescription="@string/wpa3_only" />
+                </LinearLayout>
+
+                <TextView
+                    style="@style/FieldLabel"
+                    android:text="@string/ca_certificate" />
+
+                <TextView
+                    style="@style/Text.Body"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ca_help" />
+
+                <TextView
+                    android:id="@+id/ca_summary"
+                    style="@style/Text.Value"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/import_ca"
+                    style="@style/Button.Outlined"
+                    android:layout_marginTop="12dp"
+                    android:text="@string/import_ca" />
+            </LinearLayout>
+
+            <!-- 2: key and CSR -->
+            <LinearLayout style="@style/Card">
+
+                <TextView
+                    style="@style/Text.Step"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_2" />
+
+                <TextView
+                    style="@style/Text.CardTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/manual_key" />
+
+                <RadioGroup
+                    android:id="@+id/curve"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <RadioButton
+                        android:id="@+id/curve_p384"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true"
+                        android:text="@string/curve_p384" />
+
+                    <RadioButton
+                        android:id="@+id/curve_p256"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:text="@string/curve_p256" />
+                </RadioGroup>
+
+                <Button
+                    android:id="@+id/generate"
+                    style="@style/Button.Tonal"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/generate" />
+
+                <TextView
+                    android:id="@+id/key_summary"
+                    style="@style/Text.Value"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/share_csr"
+                        style="@style/Button.Text"
+                        android:text="@string/share" />
+
+                    <Button
+                        android:id="@+id/save_csr"
+                        style="@style/Button.Text"
+                        android:text="@string/save" />
+
+                    <Button
+                        android:id="@+id/copy_csr"
+                        style="@style/Button.Text"
+                        android:text="@string/copy" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 3: signed certificate -->
+            <LinearLayout style="@style/Card">
+
+                <TextView
+                    style="@style/Text.Step"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_3" />
+
+                <TextView
+                    style="@style/Text.CardTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/manual_certificate" />
+
+                <TextView
+                    android:id="@+id/cert_summary"
+                    style="@style/Text.Value"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/import_cert"
+                        style="@style/Button.Outlined"
+                        android:text="@string/import_file" />
+
+                    <Button
+                        android:id="@+id/paste_cert"
+                        style="@style/Button.Outlined"
+                        android:layout_marginStart="8dp"
+                        android:text="@string/paste" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 4: Wi-Fi -->
+            <LinearLayout style="@style/Card">
+
+                <TextView
+                    style="@style/Text.Step"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_4" />
+
+                <TextView
+                    style="@style/Text.CardTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/manual_wifi" />
+
+                <TextView
+                    style="@style/Text.Body"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/manual_wifi_text" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/add_suggestion"
+                        style="@style/Button.Filled"
+                        android:text="@string/add_suggestion" />
+
+                    <Button
+                        android:id="@+id/save_settings_network"
+                        style="@style/Button.Outlined"
+                        android:layout_marginStart="8dp"
+                        android:text="@string/save_through_settings" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/list_suggestions"
+                        style="@style/Button.Text"
+                        android:text="@string/list_suggestions" />
+
+                    <Button
+                        android:id="@+id/remove_suggestions"
+                        style="@style/Button.Text"
+                        android:text="@string/remove_suggestions" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 5: clean up -->
+            <LinearLayout style="@style/Card">
+
+                <TextView
+                    style="@style/Text.Step"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_5" />
+
+                <TextView
+                    style="@style/Text.CardTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/manual_cleanup" />
+
+                <TextView
+                    style="@style/Text.Body"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/manual_cleanup_text" />
+
+                <Button
+                    android:id="@+id/delete_key"
+                    style="@style/Button.Outlined"
+                    android:layout_marginTop="12dp"
+                    android:text="@string/delete_key" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Latest result, like a snackbar. -->
+    <TextView
+        android:id="@+id/message"
+        style="@style/Text.Body"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="12dp"
+        android:background="@drawable/message"
+        android:backgroundTint="@color/on_surface"
+        android:padding="16dp"
+        android:textColor="@color/background"
+        android:textIsSelectable="true"
+        android:visibility="gone" />
+</LinearLayout>

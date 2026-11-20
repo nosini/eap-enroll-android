@@ -435,7 +435,7 @@ class Enroller(
             if (Certs.renewalDue(wifi, now)) return null
             return "Not requesting a new Wi-Fi certificate: the current one isn't confirmed yet. " +
                 "The server keeps unconfirmed certificates valid and allows only a few per phone. " +
-                "Connect to the network with the current one first (see the status above); " +
+                "Connect to the network with the current one first; " +
                 "it is renewed automatically when due."
         }
     }

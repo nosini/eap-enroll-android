@@ -155,7 +155,7 @@ object Notifier {
             return
         }
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Certificate renewal", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(CHANNEL, context.getString(R.string.channel_renewal), NotificationManager.IMPORTANCE_DEFAULT),
         )
         val open = PendingIntent.getActivity(
             context, 0,
@@ -163,8 +163,8 @@ object Notifier {
             PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = Notification.Builder(context, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
-            .setContentTitle("Wi-Fi certificate")
+            .setSmallIcon(R.drawable.ic_stat_enroll)
+            .setContentTitle(context.getString(R.string.notification_title))
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
@@ -181,7 +181,7 @@ object Notifier {
             Problem.NEEDS_SETUP -> return "The enrollment server no longer accepts this phone. Set it up again with a new link."
             Problem.DISABLED -> return "This phone was disabled on the enrollment server. Set it up again with a new link."
             Problem.USER_DISABLED -> return "Your account is disabled on the enrollment server. " +
-                "Once it is enabled again, open the app and tap \"Check and renew now\"."
+                "Once it is enabled again, open the app and tap \"Check now\"."
             null -> {}
         }
         val date = DateFormat.getDateInstance()

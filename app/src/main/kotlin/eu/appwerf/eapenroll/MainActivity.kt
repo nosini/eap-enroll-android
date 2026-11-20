@@ -2,79 +2,135 @@ package eu.appwerf.eapenroll
 
 import android.Manifest
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
-import android.graphics.Typeface
-import android.net.Uri
+import android.content.res.ColorStateList
 import android.net.wifi.WifiManager
-import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.text.InputType
-import android.util.Log
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
 import android.view.View
-import android.view.WindowInsets
-import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
+import android.widget.PopupMenu
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
-import java.io.File
-import java.security.MessageDigest
-import java.security.cert.X509Certificate
+import java.math.BigInteger
 import java.text.DateFormat
 import java.util.Date
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+/**
+ * The main screen: setup from a link while not enrolled, otherwise the
+ * enrollment's status, what the user still needs to do, and details.
+ */
 class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
-    private lateinit var vault: KeyVault
     private lateinit var wifi: WifiManager
-
-    private lateinit var ssidField: EditText
-    private lateinit var identityField: EditText
-    private lateinit var domainField: EditText
-    private lateinit var wpa3Button: RadioButton
-    private lateinit var p256Button: RadioButton
-    private lateinit var caSummary: TextView
-    private lateinit var keySummary: TextView
-    private lateinit var certSummary: TextView
-    private lateinit var logView: TextView
-    private lateinit var enrollSummary: TextView
-    private lateinit var setupField: EditText
     private lateinit var enroller: Enroller
     private lateinit var deviceKeys: AndroidDeviceKeys
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
 
-    private val caFile get() = File(filesDir, "ca.pem")
-    private val csrFile get() = File(noBackupFilesDir, "csr.pem")
-    private val chainFile get() = File(noBackupFilesDir, "chain.pem")
+    private lateinit var scroll: ScrollView
+    private lateinit var statusCard: LinearLayout
+    private lateinit var statusHeader: View
+    private lateinit var statusIcon: ImageView
+    private lateinit var statusTitle: TextView
+    private lateinit var statusText: TextView
+    private lateinit var busyBar: View
+    private lateinit var messageView: TextView
+    private lateinit var statusActions: View
+    private lateinit var checkButton: Button
+    private lateinit var renewButton: Button
+    private lateinit var tasks: LinearLayout
+    private lateinit var setupCard: View
+    private lateinit var setupTitle: TextView
+    private lateinit var setupText: TextView
+    private lateinit var setupField: EditText
+    private lateinit var setupWpa3: Switch
+    private lateinit var setupButton: Button
+    private lateinit var pasteButton: Button
+    private lateinit var detailsCard: View
+    private lateinit var details: LinearLayout
+
+    /** What the screen shows; read on the worker, rendered on the main thread. */
+    private class Snapshot(val state: EnrollmentState?, val deviceKey: String?, val now: Long)
+
+    private var snapshot: Snapshot? = null
+    private var busy = false
+    private var message: String? = null
+    private var approval: Int? = null
+
+    /** The user asked to set up again while enrolled (menu or a scanned link). */
+    private var setupRequested = false
 
     private val approvalListener = WifiManager.SuggestionUserApprovalStatusListener { status ->
-        log("Suggestion approval: ${WifiSetup.approvalName(status)}")
+        if (approval != status) AppLog.add("Suggestion approval: ${WifiSetup.approvalName(status)}")
+        approval = status
+        snapshot?.let(::render)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences(NetworkPrefs.PREFS, MODE_PRIVATE)
-        vault = KeyVault(this)
         wifi = getSystemService(WifiManager::class.java)
-        val uiLog: (String) -> Unit = { message -> runOnUiThread { appendLog(message) } }
-        enroller = Enrollment.enroller(this, uiLog)
+        enroller = Enrollment.enroller(this) { AppLog.add(it, toLogcat = false) }
         deviceKeys = AndroidDeviceKeys()
-        setContentView(buildUi())
-        loadSettings()
-        refreshSummaries()
-        log(deviceInfo())
+        setContentView(R.layout.activity_main)
+        Ui.edgeToEdge(this, findViewById(R.id.root))
+        bindViews()
+        AppLog.addOnce(::deviceInfo)
         handleSetupIntent(intent)
+    }
+
+    private fun bindViews() {
+        scroll = findViewById(R.id.scroll)
+        statusCard = findViewById(R.id.status_card)
+        statusHeader = findViewById(R.id.status_header)
+        statusIcon = findViewById(R.id.status_icon)
+        statusTitle = findViewById(R.id.status_title)
+        statusText = findViewById(R.id.status_text)
+        busyBar = findViewById(R.id.busy)
+        messageView = findViewById(R.id.message)
+        statusActions = findViewById(R.id.status_actions)
+        checkButton = findViewById(R.id.check_now)
+        renewButton = findViewById(R.id.renew_now)
+        tasks = findViewById(R.id.tasks)
+        setupCard = findViewById(R.id.setup_card)
+        setupTitle = findViewById(R.id.setup_title)
+        setupText = findViewById(R.id.setup_text)
+        setupField = findViewById(R.id.setup_link)
+        setupWpa3 = findViewById(R.id.setup_wpa3)
+        setupButton = findViewById(R.id.set_up)
+        pasteButton = findViewById(R.id.paste_link)
+        detailsCard = findViewById(R.id.details_card)
+        details = findViewById(R.id.details)
+
+        findViewById<View>(R.id.menu_button).setOnClickListener(::showMenu)
+        findViewById<View>(R.id.manual_link).setOnClickListener {
+            startActivity(Intent(this, ManualSetupActivity::class.java))
+        }
+        pasteButton.setOnClickListener { pasteSetupLink() }
+        setupButton.setOnClickListener { setUp() }
+        checkButton.setOnClickListener { run(Action.CHECK) { enroller.maintain(byUser = true) } }
+        renewButton.setOnClickListener { renewWifiNow() }
+        setupWpa3.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(NetworkPrefs.WPA3, checked).apply()
+        }
+        setupField.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) = updateButtons()
+        })
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -82,19 +138,15 @@ class MainActivity : Activity() {
         handleSetupIntent(intent)
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshEnrollment()
-    }
-
-    override fun onDestroy() {
-        worker.shutdown()
-        super.onDestroy()
-    }
-
     override fun onStart() {
         super.onStart()
         wifi.addSuggestionUserApprovalStatusListener(mainExecutor, approvalListener)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        setupWpa3.isChecked = prefs.getBoolean(NetworkPrefs.WPA3, false)
+        refresh()
     }
 
     override fun onStop() {
@@ -102,142 +154,278 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
-    // UI
+    override fun onDestroy() {
+        worker.shutdown()
+        super.onDestroy()
+    }
 
-    private fun buildUi(): View {
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = dp(16)
-            setPadding(pad, pad, pad, pad)
-        }
+    // State and rendering
 
-        column.addView(heading("Enrollment"))
-        enrollSummary = summary(column)
-        setupField = field(column, "Setup link (eapenroll://setup?...)", InputType.TYPE_TEXT_VARIATION_URI).apply {
-            // The link holds the one-time code: keep it out of the saved
-            // instance state and the keyboard's learning.
-            isSaveEnabled = false
-            imeOptions = imeOptions or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
-        }
-        column.addView(button("Paste setup link") { pasteSetupLink() })
-        column.addView(button("Set up with this link") { setUp() })
-        column.addView(button("Check and renew now") { background("Checking") { enroller.maintain(byUser = true) } })
-        column.addView(button("Get a new Wi-Fi certificate now") { renewWifiNow() })
-        column.addView(button("Allow location (lets the app confirm renewals)") { requestLocation() })
-        column.addView(button("Allow notifications") { requestNotifications() })
-        column.addView(button("Open Wi-Fi panel") { startActivity(Intent(Settings.Panel.ACTION_WIFI)) })
-        column.addView(button("Remove enrollment") { removeEnrollment() })
-
-        column.addView(heading("Manual setup (fallback)"))
-        column.addView(heading("Network"))
-        // Visible-password and URI variations keep keyboards from autocorrecting.
-        ssidField = field(column, "SSID", InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
-        identityField = field(column, "EAP identity (username)", InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
-        domainField = field(column, "RADIUS server domain", InputType.TYPE_TEXT_VARIATION_URI)
-        val securityGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
-        securityGroup.addView(RadioButton(this).apply {
-            id = View.generateViewId(); text = "WPA2/WPA3-Enterprise"; isChecked = true
-        })
-        wpa3Button = RadioButton(this).apply { id = View.generateViewId(); text = "WPA3-Enterprise only" }
-        securityGroup.addView(wpa3Button)
-        column.addView(securityGroup)
-        column.addView(button("Save settings") { attempt("Saving settings") { saveSettings(); log("Settings saved") } })
-        column.addView(button("Import CA certificate (PEM)") { openDocument(REQUEST_CA) })
-        caSummary = summary(column)
-
-        column.addView(heading("Key and CSR"))
-        val curveGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
-        curveGroup.addView(RadioButton(this).apply {
-            id = View.generateViewId(); text = "P-384"; isChecked = true
-        })
-        p256Button = RadioButton(this).apply { id = View.generateViewId(); text = "P-256" }
-        curveGroup.addView(p256Button)
-        column.addView(curveGroup)
-        column.addView(button("Generate key and CSR") { generateKeyAndCsr() })
-        column.addView(button("Share CSR") { shareCsr() })
-        column.addView(button("Save CSR to file") { saveCsr() })
-        column.addView(button("Copy CSR") { copyCsr() })
-        keySummary = summary(column)
-
-        column.addView(heading("Certificate"))
-        column.addView(button("Import certificate file (PEM)") { openDocument(REQUEST_CERT) })
-        column.addView(button("Paste certificate from clipboard") { pasteCertificate() })
-        certSummary = summary(column)
-
-        column.addView(heading("Wi-Fi"))
-        column.addView(button("Add network suggestion") { addSuggestion() })
-        column.addView(button("Save network through Settings") { saveThroughSettings() })
-        column.addView(button("List this app's suggestions") { listSuggestions() })
-        column.addView(button("Remove this app's suggestions") { removeSuggestions() })
-
-        column.addView(heading("Clean-up"))
-        column.addView(button("Delete stored key, CSR and certificate") { deleteKey() })
-
-        column.addView(heading("Log"))
-        logView = TextView(this).apply {
-            typeface = Typeface.MONOSPACE
-            textSize = 12f
-            setTextIsSelectable(true)
-        }
-        column.addView(logView)
-        column.addView(button("Copy log") { copyText("log", logView.text.toString()) })
-
-        return ScrollView(this).apply {
-            addView(column)
-            setOnApplyWindowInsetsListener { view, insets ->
-                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-                WindowInsets.CONSUMED
+    /** Reads the state on the worker (it may wait for a running request) and renders it. */
+    private fun refresh() {
+        worker.execute {
+            val snap = try {
+                val state = enroller.state()
+                if (state != null && state.problem == null) scheduleQuietly { Jobs.scheduleDaily(this) }
+                val key = state?.let { runCatching { deviceKeys.describeWithAttestation(it.deviceAlias) }.getOrNull() }
+                Snapshot(state, key, System.currentTimeMillis())
+            } catch (e: Exception) {
+                AppLog.add("Enrollment state unreadable: ${Errors.describe(e)}")
+                Snapshot(null, null, System.currentTimeMillis())
+            }
+            runOnUiThread {
+                snapshot = snap
+                render(snap)
             }
         }
     }
 
-    private fun heading(text: String) = TextView(this).apply {
-        this.text = text
-        textSize = 20f
-        setPadding(0, dp(16), 0, dp(4))
+    private fun render(snap: Snapshot) {
+        val state = snap.state
+        val stopped = state?.problem == Problem.NEEDS_SETUP || state?.problem == Problem.DISABLED
+        if (state == null || stopped) setupRequested = false
+        setupCard.visibility = if (state == null || stopped || setupRequested) View.VISIBLE else View.GONE
+        setupTitle.setText(if (state == null) R.string.setup_title else R.string.setup_again_title)
+
+        statusCard.visibility = if (state != null || busy || message != null) View.VISIBLE else View.GONE
+        detailsCard.visibility = if (state != null) View.VISIBLE else View.GONE
+        statusActions.visibility = if (state != null && !stopped) View.VISIBLE else View.GONE
+        if (state != null) {
+            statusHeader.visibility = View.VISIBLE
+            renderStatus(state, snap.now)
+            renderDetails(state, snap.deviceKey)
+        } else {
+            // Not enrolled: the card only carries progress and the last result.
+            statusHeader.visibility = if (busy) View.VISIBLE else View.GONE
+            showStatus(Tone.INFO, getString(R.string.status_working), null)
+        }
+        renderTasks(state)
+        busyBar.visibility = if (busy) View.VISIBLE else View.GONE
+        messageView.visibility = if (message != null) View.VISIBLE else View.GONE
+        messageView.text = message
+        updateButtons()
     }
 
-    private fun field(parent: LinearLayout, hint: String, variation: Int) = EditText(this).apply {
-        this.hint = hint
-        inputType = InputType.TYPE_CLASS_TEXT or variation or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        isSingleLine = true
-        parent.addView(this)
+    private fun updateButtons() {
+        checkButton.isEnabled = !busy
+        renewButton.isEnabled = !busy
+        pasteButton.isEnabled = !busy
+        setupButton.isEnabled = !busy && setupField.text.isNotBlank()
     }
 
-    private fun summary(parent: LinearLayout) = TextView(this).apply {
-        setTextIsSelectable(true)
-        parent.addView(this)
-    }
+    private enum class Tone { OK, INFO, WARNING, ERROR }
 
-    private fun button(text: String, action: () -> Unit) = Button(this).apply {
-        this.text = text
-        isAllCaps = false
-        setOnClickListener { action() }
-    }
-
-    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-
-    private fun log(message: String) {
-        Log.i(TAG, message)
-        appendLog(message)
-    }
-
-    private fun appendLog(message: String) {
-        val time = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date())
-        logView.append("$time $message\n")
-    }
-
-    private fun attempt(what: String, block: () -> Unit) {
-        try {
-            block()
-        } catch (e: Exception) {
-            Log.w(TAG, "$what failed", e)
-            log("$what failed: ${e.javaClass.name}: ${e.message}")
+    private fun renderStatus(state: EnrollmentState, now: Long) {
+        val attention = Notifier.attentionText(state, now)
+        val wifiCert = state.wifiChain?.get(0)
+        val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+        when {
+            state.problem == Problem.NEEDS_SETUP || state.problem == Problem.DISABLED ->
+                showStatus(Tone.ERROR, getString(R.string.status_stopped_title), attention)
+            state.problem == Problem.USER_DISABLED ->
+                showStatus(Tone.ERROR, getString(R.string.status_user_disabled_title), attention)
+            attention != null -> showStatus(Tone.WARNING, getString(R.string.status_attention_title), attention)
+            state.waitUntil > now -> showStatus(
+                Tone.INFO, getString(R.string.status_wait_title),
+                getString(R.string.status_wait_text, time.format(Date(state.waitUntil))),
+            )
+            wifiCert == null -> showStatus(
+                Tone.WARNING, getString(R.string.status_no_wifi_title),
+                listOfNotNull(getString(R.string.status_no_wifi_text), state.lastError).joinToString("\n\n"),
+            )
+            state.confirmPending && state.connectedAfterInstall ->
+                showStatus(Tone.INFO, getString(R.string.status_confirming_title), getString(R.string.status_confirming_text))
+            state.confirmPending -> showStatus(
+                Tone.INFO, getString(R.string.status_unconfirmed_title),
+                confirmHint() + " " + getString(R.string.confirm_explained),
+            )
+            else -> showStatus(
+                Tone.OK, getString(R.string.status_ok_title),
+                getString(R.string.status_ok_text, quotedSsid(state), dateOf(renewalStart(wifiCert))),
+            )
         }
     }
 
-    // Enrollment
+    private fun showStatus(tone: Tone, title: String, text: String?) {
+        statusTitle.text = title
+        statusText.text = text
+        statusText.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+        val (card, onCard, iconBg, icon) = when (tone) {
+            Tone.OK -> listOf(R.color.surface, R.color.on_surface, R.color.primary, R.drawable.ic_check)
+            Tone.INFO -> listOf(R.color.surface, R.color.on_surface, R.color.secondary_container, R.drawable.ic_schedule)
+            Tone.WARNING -> listOf(R.color.warning_container, R.color.on_warning_container, R.color.on_warning_container, R.drawable.ic_warning)
+            Tone.ERROR -> listOf(R.color.error_container, R.color.on_error_container, R.color.on_error_container, R.drawable.ic_error)
+        }
+        val iconTint = when (tone) {
+            Tone.OK -> R.color.on_primary
+            Tone.INFO -> R.color.on_secondary_container
+            Tone.WARNING -> R.color.warning_container
+            Tone.ERROR -> R.color.error_container
+        }
+        statusCard.backgroundTintList = ColorStateList.valueOf(getColor(card))
+        statusTitle.setTextColor(getColor(onCard))
+        statusText.setTextColor(getColor(onCard))
+        statusIcon.setImageResource(icon)
+        statusIcon.backgroundTintList = ColorStateList.valueOf(getColor(iconBg))
+        statusIcon.imageTintList = ColorStateList.valueOf(getColor(iconTint))
+    }
+
+    private fun renderDetails(state: EnrollmentState, deviceKey: String?) {
+        details.removeAllViews()
+        val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+        state.profile?.let {
+            val security = getString(
+                if (prefs.getBoolean(NetworkPrefs.WPA3, false)) R.string.security_wpa3 else R.string.security_wpa2_wpa3,
+            )
+            detail(R.string.detail_network, "${quotedSsid(state)}\n$security")
+        }
+        val wifiCert = state.wifiChain?.get(0)
+        detail(R.string.detail_username, Certs.commonName(wifiCert ?: state.deviceChain[0]))
+        if (wifiCert != null) {
+            val confirmed = getString(if (state.confirmPending) R.string.wifi_cert_unconfirmed else R.string.wifi_cert_confirmed)
+            detail(
+                R.string.detail_wifi_cert,
+                getString(R.string.wifi_cert_value, dateOf(wifiCert.notAfter.time), dateOf(renewalStart(wifiCert))) +
+                    "\n$confirmed",
+            )
+        }
+        val device = state.deviceChain[0]
+        detail(
+            R.string.detail_device_cert,
+            listOfNotNull(
+                getString(R.string.device_cert_value, dateOf(device.notAfter.time)),
+                deviceKey?.let { getString(R.string.device_key_value, it) },
+            ).joinToString("\n"),
+        )
+        detail(R.string.detail_server, state.serverUrl)
+        detail(
+            R.string.detail_last_check,
+            if (state.lastSuccessAt > 0) time.format(Date(state.lastSuccessAt)) else getString(R.string.never),
+        )
+        if (state.lastError != null && state.lastErrorAt > state.lastSuccessAt) {
+            detail(R.string.detail_last_error, "${time.format(Date(state.lastErrorAt))}: ${state.lastError}")
+        }
+    }
+
+    private fun detail(label: Int, value: String) {
+        val row = LayoutInflater.from(this).inflate(R.layout.item_detail, details, false)
+        row.findViewById<TextView>(R.id.detail_label).setText(label)
+        row.findViewById<TextView>(R.id.detail_value).text = value
+        details.addView(row)
+    }
+
+    private fun renderTasks(state: EnrollmentState?) {
+        tasks.removeAllViews()
+        if (state == null || state.problem != null) return
+        if (approval == WifiManager.STATUS_SUGGESTION_APPROVAL_PENDING ||
+            approval == WifiManager.STATUS_SUGGESTION_APPROVAL_REJECTED_BY_USER
+        ) {
+            task(TASK_APPROVE, R.string.task_approve_title, R.string.task_approve_text, R.string.task_approve_action, dismissable = false) {
+                startActivity(Intent(Settings.Panel.ACTION_WIFI))
+            }
+        }
+        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            task(TASK_LOCATION, R.string.task_location_title, R.string.task_location_text, R.string.task_location_action) {
+                requestPermissions(
+                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                    REQUEST_LOCATION,
+                )
+            }
+        } else if (!granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
+            // Android shows the "Allow all the time" choice in Settings.
+            task(TASK_BACKGROUND, R.string.task_background_title, R.string.task_background_text, R.string.task_background_action) {
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQUEST_LOCATION)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
+            task(TASK_NOTIFICATIONS, R.string.task_notifications_title, R.string.task_notifications_text, R.string.task_notifications_action) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    private fun task(id: String, title: Int, text: Int, action: Int, dismissable: Boolean = true, onAction: () -> Unit) {
+        if (dismissable && id in dismissedTasks()) return
+        val card = LayoutInflater.from(this).inflate(R.layout.item_task, tasks, false)
+        card.findViewById<TextView>(R.id.task_title).setText(title)
+        card.findViewById<TextView>(R.id.task_text).setText(text)
+        card.findViewById<Button>(R.id.task_action).apply {
+            setText(action)
+            setOnClickListener { onAction() }
+        }
+        card.findViewById<Button>(R.id.task_dismiss).apply {
+            visibility = if (dismissable) View.VISIBLE else View.GONE
+            setOnClickListener {
+                prefs.edit().putStringSet(PREF_DISMISSED, dismissedTasks() + id).apply()
+                snapshot?.let(::render)
+            }
+        }
+        tasks.addView(card)
+    }
+
+    private fun dismissedTasks(): Set<String> = prefs.getStringSet(PREF_DISMISSED, emptySet())!!.toSet()
+
+    private fun confirmHint(): String = getString(
+        when {
+            !granted(Manifest.permission.ACCESS_FINE_LOCATION) -> R.string.confirm_hint_location
+            !granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION) -> R.string.confirm_hint_foreground
+            else -> R.string.confirm_hint_background
+        },
+    )
+
+    private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun quotedSsid(state: EnrollmentState) = "“${state.profile?.ssid ?: "?"}”"
+
+    private fun renewalStart(cert: java.security.cert.X509Certificate): Long {
+        val start = cert.notBefore.time
+        return start + (cert.notAfter.time - start) / 3 * 2
+    }
+
+    private fun dateOf(millis: Long): String = DateFormat.getDateInstance().format(Date(millis))
+
+    // Menu
+
+    private fun showMenu(anchor: View) {
+        val state = snapshot?.state
+        val popup = PopupMenu(this, anchor)
+        val menu = popup.menu
+        menu.add(0, MENU_WIFI, 0, R.string.menu_wifi_settings)
+        if (state != null && state.problem != Problem.NEEDS_SETUP && state.problem != Problem.DISABLED) {
+            menu.add(0, MENU_SET_UP_AGAIN, 1, R.string.menu_set_up_again)
+        }
+        menu.add(0, MENU_MANUAL, 2, R.string.menu_manual)
+        menu.add(0, MENU_LOG, 3, R.string.menu_log)
+        if (state != null) menu.add(0, MENU_REMOVE, 4, R.string.menu_remove)
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                MENU_WIFI -> startActivity(Intent(Settings.Panel.ACTION_WIFI))
+                MENU_SET_UP_AGAIN -> {
+                    setupRequested = true
+                    snapshot?.let(::render)
+                    scroll.post { scroll.smoothScrollTo(0, setupCard.top) }
+                }
+                MENU_MANUAL -> startActivity(Intent(this, ManualSetupActivity::class.java))
+                MENU_LOG -> startActivity(Intent(this, LogActivity::class.java))
+                MENU_REMOVE -> confirmRemove()
+            }
+            true
+        }
+        popup.show()
+    }
+
+    private fun confirmRemove() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.remove_title)
+            .setMessage(R.string.remove_text)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.remove) { _, _ -> removeEnrollment() }
+            .show()
+    }
+
+    // Actions
+
+    private enum class Action { SETUP, CHECK, RENEW }
 
     private fun handleSetupIntent(intent: Intent?) {
         val data = intent?.data ?: return
@@ -247,48 +435,37 @@ class MainActivity : Activity() {
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         // Clear it, so a recreated activity doesn't see the link again.
         intent.data = null
-        attempt("Reading setup link") {
+        try {
             val link = SetupUri.parse(data.toString())
             setupField.setText(data.toString())
-            log("Setup link for ${link.serverUrl} filled in. Tap \"Set up with this link\" to enroll.")
+            setupRequested = true
+            showMessage(getString(R.string.link_filled_in, link.serverUrl))
+        } catch (e: Exception) {
+            showMessage(getString(R.string.result_failed, Errors.describe(e)))
         }
     }
 
-    private fun pasteSetupLink() = attempt("Pasting setup link") {
-        val clip = getSystemService(ClipboardManager::class.java).primaryClip
-        val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
-        check(!text.isNullOrBlank()) { "Clipboard is empty" }
+    private fun pasteSetupLink() {
+        val text = Ui.clipboardText(this)
+        if (text == null) {
+            showMessage(getString(R.string.clipboard_empty))
+            return
+        }
         setupField.setText(text.trim())
     }
 
-    private fun setUp() = attempt("Setting up") {
-        val link = SetupUri.parse(setupField.text.toString())
-        background("Setting up") {
+    private fun setUp() {
+        val link = try {
+            SetupUri.parse(setupField.text.toString().trim())
+        } catch (e: Exception) {
+            showMessage(getString(R.string.result_failed, Errors.describe(e)))
+            return
+        }
+        prefs.edit().putBoolean(NetworkPrefs.WPA3, setupWpa3.isChecked).apply()
+        run(Action.SETUP) {
             val outcome = enroller.setup(link)
             scheduleQuietly { Jobs.scheduleDaily(this) }
-            runOnUiThread { setupField.setText("") }
             outcome
-        }
-    }
-
-    /** Runs [block] on the worker thread, logs its outcome and refreshes the status. */
-    private fun background(what: String, block: () -> Enroller.Outcome) {
-        saveSettingsQuietly()
-        log("$what...")
-        worker.execute {
-            val message = try {
-                val outcome = block()
-                scheduleQuietly { Jobs.followUp(this, outcome, enroller.state()) }
-                "$what: $outcome"
-            } catch (e: Exception) {
-                Log.w(TAG, "$what failed", e)
-                "$what failed: ${Errors.describe(e)}"
-            }
-            Notifier.update(this)
-            runOnUiThread {
-                log(message)
-                refreshEnrollment()
-            }
         }
     }
 
@@ -296,17 +473,93 @@ class MainActivity : Activity() {
     private fun renewWifiNow() {
         // The state is read on the worker: the enroller's lock may be held by a running request.
         worker.execute {
-            val refusal = try {
-                Enroller.manualWifiRenewalRefusal(enroller.state(), System.currentTimeMillis())
-            } catch (e: Exception) {
-                null
-            }
+            val refusal = runCatching { Enroller.manualWifiRenewalRefusal(enroller.state(), System.currentTimeMillis()) }
+                .getOrNull()
             runOnUiThread {
                 if (refusal != null) {
-                    log(refusal)
+                    AppLog.add(refusal)
+                    showMessage(refusal)
                 } else {
-                    background("Renewing") { enroller.maintain(renewWifi = true, byUser = true) }
+                    run(Action.RENEW) { enroller.maintain(renewWifi = true, byUser = true) }
                 }
+            }
+        }
+    }
+
+    /** Runs [block] on the worker, shows its outcome and refreshes the status. */
+    private fun run(action: Action, block: () -> Enroller.Outcome) {
+        if (busy) return
+        busy = true
+        message = null
+        snapshot?.let(::render)
+        AppLog.add("${action.name.lowercase()}: started")
+        worker.execute {
+            val before = runCatching { enroller.state()?.wifiChain?.get(0)?.serialNumber }.getOrNull()
+            val text = try {
+                val outcome = block()
+                val after = enroller.state()
+                scheduleQuietly { Jobs.followUp(this, outcome, after) }
+                AppLog.add("${action.name.lowercase()}: $outcome")
+                describe(action, outcome, after, before)
+            } catch (e: Exception) {
+                AppLog.add("${action.name.lowercase()} failed: ${Errors.describe(e)}")
+                getString(R.string.result_failed, Errors.describe(e))
+            }
+            Notifier.update(this)
+            val setUp = action == Action.SETUP && runCatching { enroller.state() != null }.getOrDefault(false)
+            runOnUiThread {
+                busy = false
+                message = text
+                if (setUp) {
+                    setupField.setText("")
+                    setupRequested = false
+                }
+                refresh()
+            }
+        }
+    }
+
+    private fun describe(action: Action, outcome: Enroller.Outcome, state: EnrollmentState?, before: BigInteger?): String {
+        val error = state?.lastError?.let { "\n\n$it" } ?: ""
+        return when (outcome) {
+            Enroller.Outcome.OK -> when {
+                action == Action.SETUP -> getString(R.string.result_set_up)
+                state?.wifiChain?.get(0)?.serialNumber != before -> getString(R.string.result_renewed)
+                else -> getString(R.string.result_up_to_date)
+            }
+            Enroller.Outcome.RETRY -> getString(R.string.result_retry) + error
+            Enroller.Outcome.LATER -> getString(R.string.result_later) + error
+            Enroller.Outcome.WAIT -> getString(
+                R.string.result_wait,
+                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(state?.waitUntil ?: 0)),
+            )
+            Enroller.Outcome.STOPPED -> Notifier.attentionText(state, System.currentTimeMillis()) ?: outcome.name
+            Enroller.Outcome.NOT_ENROLLED -> outcome.name
+        }
+    }
+
+    private fun showMessage(text: String) {
+        message = text
+        snapshot?.let(::render)
+    }
+
+    private fun removeEnrollment() {
+        worker.execute {
+            val text = try {
+                enroller.forget()
+                deviceKeys.deleteOthers(emptySet())
+                Jobs.cancelAll(this)
+                val status = wifi.removeNetworkSuggestions(emptyList())
+                AppLog.add("Enrollment removed; suggestions removed: ${WifiSetup.statusName(status)}")
+                getString(R.string.removed)
+            } catch (e: Exception) {
+                AppLog.add("Removing enrollment failed: ${Errors.describe(e)}")
+                getString(R.string.result_failed, Errors.describe(e))
+            }
+            Notifier.update(this)
+            runOnUiThread {
+                message = text
+                refresh()
             }
         }
     }
@@ -316,387 +569,18 @@ class MainActivity : Activity() {
         try {
             block()
         } catch (e: Exception) {
-            Log.w(TAG, "Scheduling background work failed", e)
-            runOnUiThread { appendLog("Scheduling background work failed: ${Errors.describe(e)}") }
-        }
-    }
-
-    private fun saveSettingsQuietly() {
-        runCatching { saveSettings() }
-    }
-
-    private fun removeEnrollment() = attempt("Removing enrollment") {
-        worker.execute {
-            val message = try {
-                enroller.forget()
-                deviceKeys.deleteOthers(emptySet())
-                Jobs.cancelAll(this)
-                val status = wifi.removeNetworkSuggestions(emptyList())
-                "Enrollment removed; suggestions removed: ${WifiSetup.statusName(status)}"
-            } catch (e: Exception) {
-                "Removing enrollment failed: ${e.javaClass.simpleName}: ${e.message}"
-            }
-            Notifier.update(this)
-            runOnUiThread {
-                log(message)
-                refreshEnrollment()
-            }
-        }
-    }
-
-    private fun requestLocation() {
-        val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!fine) {
-            requestPermissions(
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
-                REQUEST_LOCATION,
-            )
-        } else {
-            // Android shows the "Allow all the time" choice in Settings.
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQUEST_LOCATION)
-        }
-    }
-
-    private fun requestNotifications() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
-        } else {
-            log("Notifications need no permission on this Android version")
+            AppLog.add("Scheduling background work failed: ${Errors.describe(e)}")
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        log("Permissions: " + permissions.indices.joinToString {
+        AppLog.add("Permissions: " + permissions.indices.joinToString {
             "${permissions[it].substringAfterLast('.')}=" +
                 if (grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
         })
-        refreshEnrollment()
+        refresh()
     }
-
-    private fun refreshEnrollment() {
-        worker.execute {
-            val text = try {
-                enrollmentText()
-            } catch (e: Exception) {
-                "Enrollment state unreadable: ${e.javaClass.simpleName}: ${e.message}"
-            }
-            runOnUiThread { enrollSummary.text = text }
-        }
-    }
-
-    private fun enrollmentText(): String {
-        val state = enroller.state()
-        if (state != null && state.problem == null) scheduleQuietly { Jobs.scheduleDaily(this) }
-        state ?: return "Not enrolled. Open the setup link from the enrollment server " +
-            "(scan its QR code), or paste it below."
-        val now = System.currentTimeMillis()
-        val date = DateFormat.getDateInstance()
-        val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-        val lines = ArrayList<String>()
-        lines += "Server: ${state.serverUrl}"
-        val device = state.deviceChain[0]
-        lines += "Device credential: ${Certs.commonName(device)}, valid until ${date.format(device.notAfter)} " +
-            "(key in ${deviceKeys.describeWithAttestation(state.deviceAlias)})"
-        state.profile?.let {
-            lines += "Network: '${it.ssid}', server ${it.serverDomain}, " +
-                if (prefs.getBoolean(NetworkPrefs.WPA3, false)) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"
-        }
-        val wifiCert = state.wifiChain?.get(0)
-        if (wifiCert == null) {
-            lines += "Wi-Fi certificate: none yet"
-        } else {
-            val start = wifiCert.notBefore.time
-            val renewAt = Date(start + (wifiCert.notAfter.time - start) / 3 * 2)
-            lines += "Wi-Fi certificate: serial ${wifiCert.serialNumber.toString(16)}, valid until " +
-                "${date.format(wifiCert.notAfter)}, renewal from ${date.format(renewAt)}"
-            lines += when {
-                !state.confirmPending -> "Confirmed: older Wi-Fi certificates are revoked."
-                state.connectedAfterInstall -> "Connected with it; confirming with the server."
-                else -> "Not confirmed yet: " + confirmHint()
-            }
-        }
-        when (state.problem) {
-            Problem.NEEDS_SETUP -> lines += "PROBLEM: the server no longer accepts this phone; set it up with a new link."
-            Problem.DISABLED -> lines += "PROBLEM: this phone is disabled on the server; set it up with a new link."
-            Problem.USER_DISABLED -> lines += "PROBLEM: your account is disabled on the server. " +
-                "Once it is enabled again, tap \"Check and renew now\"."
-            null -> {}
-        }
-        if (state.waitUntil > now) {
-            lines += "Waiting: the server asked for no requests before ${time.format(Date(state.waitUntil))}."
-        }
-        state.lastError?.let { lines += "Last error (${time.format(Date(state.lastErrorAt))}): $it" }
-        if (state.lastSuccessAt > 0) lines += "Last successful check: ${time.format(Date(state.lastSuccessAt))}"
-        Notifier.attentionText(state, now)?.let { lines += "Attention: $it" }
-        return lines.joinToString("\n")
-    }
-
-    private fun confirmHint(): String {
-        val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val background = checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
-        return when {
-            !fine -> "allow location, then turn Wi-Fi off and on while this app is open."
-            !background -> "turn Wi-Fi off and on while this app is open (or allow location all the time)."
-            else -> "happens on the next Wi-Fi connection."
-        }
-    }
-
-    // Settings
-
-    private fun loadSettings() {
-        ssidField.setText(prefs.getString("ssid", ""))
-        identityField.setText(prefs.getString("identity", ""))
-        domainField.setText(prefs.getString("domain", ""))
-        wpa3Button.isChecked = prefs.getBoolean(NetworkPrefs.WPA3, false)
-        p256Button.isChecked = prefs.getString("curve", CURVE_P384) == CURVE_P256
-    }
-
-    /** Saves the form; throws if the domain isn't a valid host name, without saving anything. */
-    private fun saveSettings() {
-        val domainText = domainField.text.toString()
-        val domain = if (domainText.isBlank()) "" else Input.normalizeDomain(domainText)
-        domainField.setText(domain)
-        prefs.edit()
-            // Not trimmed: leading and trailing spaces are valid in an SSID.
-            .putString("ssid", ssidField.text.toString())
-            .putString("identity", identityField.text.toString().trim())
-            .putString("domain", domain)
-            .putBoolean(NetworkPrefs.WPA3, wpa3Button.isChecked)
-            .putString("curve", if (p256Button.isChecked) CURVE_P256 else CURVE_P384)
-            .apply()
-    }
-
-    private fun networkSettings(): NetworkSettings {
-        saveSettings()
-        check(caFile.exists()) { "No CA certificate imported" }
-        return NetworkSettings(
-            ssid = prefs.getString("ssid", "")!!,
-            identity = prefs.getString("identity", "")!!,
-            serverDomain = prefs.getString("domain", "")!!,
-            wpa3 = prefs.getBoolean(NetworkPrefs.WPA3, false),
-            caCertificates = Pem.certificates(caFile.readBytes()),
-        )
-    }
-
-    private fun refreshSummaries() {
-        caSummary.text = if (caFile.exists()) {
-            runCatching { Pem.certificates(caFile.readBytes()).joinToString("\n") { describe(it) } }
-                .getOrElse { "CA file unreadable: ${it.message}" }
-        } else {
-            "No CA certificate imported."
-        }
-        keySummary.text = if (vault.hasKey()) {
-            "Key stored (encrypted). Public key SHA-256: ${fingerprint(vault.publicKeyEncoded()!!)}"
-        } else {
-            "No key stored."
-        }
-        certSummary.text = if (chainFile.exists()) {
-            runCatching { Pem.certificates(chainFile.readBytes()).joinToString("\n") { describe(it) } }
-                .getOrElse { "Certificate file unreadable: ${it.message}" }
-        } else {
-            "No certificate imported."
-        }
-    }
-
-    // Key and CSR
-
-    private fun generateKeyAndCsr() = attempt("Generating key") {
-        saveSettings()
-        val identity = prefs.getString("identity", "")!!
-        check(identity.isNotEmpty()) { "Set the EAP identity first" }
-        if (vault.hasKey()) {
-            log("Replacing the stored key")
-        }
-        chainFile.delete()
-        val curve = prefs.getString("curve", CURVE_P384)!!
-        val keyPair = vault.generate(curve)
-        val csr = Pem.encode("CERTIFICATE REQUEST", Csr.create(keyPair, identity))
-        csrFile.writeText(csr)
-        log("Generated $curve key; wrapping key in " +
-            if (vault.lastWrapKeyInStrongBox == true) "StrongBox" else "TEE/software keystore")
-        log("CSR for CN=$identity created")
-        refreshSummaries()
-    }
-
-    private fun csrText(): String {
-        check(csrFile.exists()) { "No CSR yet" }
-        return csrFile.readText()
-    }
-
-    private fun shareCsr() = attempt("Sharing CSR") {
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "CSR")
-            putExtra(Intent.EXTRA_TEXT, csrText())
-        }
-        startActivity(Intent.createChooser(intent, "Share CSR"))
-    }
-
-    private fun saveCsr() = attempt("Saving CSR") {
-        csrText()
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/pkcs10"
-            putExtra(Intent.EXTRA_TITLE, "wifi.csr")
-        }
-        @Suppress("DEPRECATION")
-        startActivityForResult(intent, REQUEST_SAVE_CSR)
-    }
-
-    private fun copyCsr() = attempt("Copying CSR") { copyText("CSR", csrText()) }
-
-    // Certificates
-
-    private fun openDocument(requestCode: Int) {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-        }
-        @Suppress("DEPRECATION")
-        startActivityForResult(intent, requestCode)
-    }
-
-    @Deprecated("Platform Activity API; AndroidX is not used")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        @Suppress("DEPRECATION")
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_ADD_NETWORKS) {
-            val results = data?.getIntegerArrayListExtra(Settings.EXTRA_WIFI_NETWORK_RESULT_LIST)
-            log("Settings add-network result: code $resultCode, per network $results " +
-                "(0 = success, 1 = failed, 2 = already exists)")
-            return
-        }
-        val uri = data?.data
-        if (resultCode != RESULT_OK || uri == null) return
-        when (requestCode) {
-            REQUEST_CA -> attempt("Importing CA certificate") { importCa(readUri(uri)) }
-            REQUEST_CERT -> attempt("Importing certificate") { importCertificate(readUri(uri)) }
-            REQUEST_SAVE_CSR -> attempt("Saving CSR") {
-                contentResolver.openOutputStream(uri)!!.use { it.write(csrText().toByteArray()) }
-                log("CSR saved")
-            }
-        }
-    }
-
-    private fun readUri(uri: Uri): ByteArray {
-        val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-        check(bytes.size <= MAX_IMPORT_BYTES) { "File is too large" }
-        return bytes
-    }
-
-    private fun importCa(data: ByteArray) {
-        val certs = Pem.certificates(data)
-        certs.forEach { check(it.basicConstraints >= 0) { "Not a CA certificate: ${it.subjectX500Principal}" } }
-        caFile.writeText(certs.joinToString("") { Pem.encode("CERTIFICATE", it.encoded) })
-        log("Imported ${certs.size} CA certificate(s)")
-        refreshSummaries()
-    }
-
-    private fun pasteCertificate() = attempt("Pasting certificate") {
-        val clip = getSystemService(ClipboardManager::class.java).primaryClip
-        val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
-        check(!text.isNullOrBlank()) { "Clipboard is empty" }
-        importCertificate(text.toByteArray())
-    }
-
-    private fun importCertificate(data: ByteArray) {
-        val publicKey = vault.publicKeyEncoded() ?: throw IllegalStateException("Generate a key first")
-        val chain = Pem.certificates(data)
-        val leaf = chain.first()
-        check(leaf.publicKey.encoded.contentEquals(publicKey)) {
-            "The first certificate doesn't belong to the stored key"
-        }
-        check(leaf.basicConstraints == -1) { "The first certificate is a CA certificate" }
-        chain.drop(1).forEach {
-            check(it.basicConstraints >= 0) { "Not a CA certificate: ${it.subjectX500Principal}" }
-        }
-        val identity = prefs.getString("identity", "")!!
-        val cn = commonName(leaf)
-        if (!cn.equals(identity, ignoreCase = true)) {
-            log("Warning: certificate CN '$cn' differs from the EAP identity '$identity'")
-        }
-        runCatching { leaf.checkValidity() }.onFailure { log("Warning: certificate is not valid now: ${it.message}") }
-        chainFile.writeText(chain.joinToString("") { Pem.encode("CERTIFICATE", it.encoded) })
-        log("Imported certificate chain of ${chain.size}")
-        refreshSummaries()
-    }
-
-    // Wi-Fi
-
-    private fun buildSuggestion(): WifiNetworkSuggestion {
-        check(chainFile.exists()) { "Import the signed certificate first" }
-        val settings = networkSettings()
-        val keyPair = vault.load()
-        val chain = Pem.certificates(chainFile.readBytes())
-        if (settings.ssid != settings.ssid.trim()) {
-            log("Note: the SSID starts or ends with a space; it has to match the network exactly")
-        }
-        log("Network: SSID '${settings.ssid}' (${settings.ssid.length} characters), identity '${settings.identity}', " +
-            "domain '${settings.serverDomain}', ${if (settings.wpa3) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"}, " +
-            "${settings.caCertificates.size} CA certificate(s), client chain of ${chain.size}")
-        return WifiSetup.suggestion(settings, keyPair.private, chain)
-    }
-
-    private fun addSuggestion() = attempt("Adding suggestion") {
-        val suggestion = buildSuggestion()
-        val status = wifi.addNetworkSuggestions(listOf(suggestion))
-        log("addNetworkSuggestions: ${WifiSetup.statusName(status)}")
-        if (status == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
-            log("Check the notification to allow the suggestion, then watch Wi-Fi settings. " +
-                "Delete the stored key once the connection works.")
-        }
-    }
-
-    private fun saveThroughSettings() = attempt("Saving through Settings") {
-        val suggestion = buildSuggestion()
-        val intent = Intent(Settings.ACTION_WIFI_ADD_NETWORKS).apply {
-            putParcelableArrayListExtra(Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(suggestion))
-        }
-        @Suppress("DEPRECATION")
-        startActivityForResult(intent, REQUEST_ADD_NETWORKS)
-    }
-
-    private fun listSuggestions() = attempt("Listing suggestions") {
-        val suggestions = wifi.networkSuggestions
-        log("This app has ${suggestions.size} suggestion(s): " +
-            suggestions.joinToString { it.ssid ?: "?" })
-    }
-
-    private fun removeSuggestions() = attempt("Removing suggestions") {
-        val status = wifi.removeNetworkSuggestions(emptyList())
-        log("removeNetworkSuggestions (all): ${WifiSetup.statusName(status)}")
-    }
-
-    private fun deleteKey() = attempt("Deleting key") {
-        vault.delete()
-        csrFile.delete()
-        chainFile.delete()
-        log("Stored key, CSR and certificate deleted")
-        refreshSummaries()
-    }
-
-    // Helpers
-
-    private fun copyText(label: String, text: String) {
-        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
-        log("$label copied to clipboard")
-    }
-
-    private fun describe(cert: X509Certificate): String =
-        "${cert.subjectX500Principal.name}\n  issuer ${cert.issuerX500Principal.name}\n" +
-            "  valid until ${DateFormat.getDateInstance().format(cert.notAfter)}, " +
-            "serial ${cert.serialNumber.toString(16)}"
-
-    private fun commonName(cert: X509Certificate): String =
-        cert.subjectX500Principal.name.split(',')
-            .map { it.trim() }
-            .firstOrNull { it.startsWith("CN=") }
-            ?.removePrefix("CN=") ?: ""
-
-    private fun fingerprint(data: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(data)
-            .joinToString("") { "%02x".format(it) }.take(32)
 
     private fun deviceInfo(): String {
         val strongBox = packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
@@ -706,15 +590,17 @@ class MainActivity : Activity() {
     }
 
     private companion object {
-        const val TAG = "EapEnroll"
-        const val CURVE_P384 = "secp384r1"
-        const val CURVE_P256 = "secp256r1"
-        const val REQUEST_CA = 1
-        const val REQUEST_CERT = 2
-        const val REQUEST_SAVE_CSR = 3
-        const val REQUEST_ADD_NETWORKS = 4
         const val REQUEST_LOCATION = 5
         const val REQUEST_NOTIFICATIONS = 6
-        const val MAX_IMPORT_BYTES = 64 * 1024
+        const val PREF_DISMISSED = "dismissed_tasks"
+        const val TASK_APPROVE = "approve"
+        const val TASK_LOCATION = "location"
+        const val TASK_BACKGROUND = "background_location"
+        const val TASK_NOTIFICATIONS = "notifications"
+        const val MENU_WIFI = 1
+        const val MENU_SET_UP_AGAIN = 2
+        const val MENU_MANUAL = 3
+        const val MENU_LOG = 4
+        const val MENU_REMOVE = 5
     }
 }

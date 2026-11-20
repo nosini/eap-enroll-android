@@ -48,20 +48,17 @@ Releases are signed with this certificate (check with
    few minutes.
 2. Scan the QR code. If the camera app opens the link, EAP Enroll opens
    with it filled in. Otherwise copy the link, open EAP Enroll and tap
-   **Paste setup link**.
-3. Tap **Set up with this link**. The app gets its device credential, the
-   network's settings and the first Wi-Fi certificate, and adds the network
-   to Wi-Fi.
-4. Android asks whether to allow the suggested network. Allow it. The phone
+   **Paste link**.
+3. If the network is WPA3-Enterprise only, turn on **WPA3-Enterprise only
+   network**. The server doesn't tell the app this.
+4. Tap **Set up**. The app gets its device credential, the network's
+   settings and the first Wi-Fi certificate, and adds the network to Wi-Fi.
+5. Android asks whether to allow the suggested network. Allow it. The phone
    then connects to the network on its own; Wi-Fi settings show it as
    "Connected via EAP Enroll".
-5. Tap **Allow location** and choose **Allow all the time**, and tap
-   **Allow notifications**. Both are optional; see
-   [Permissions](#permissions).
-
-If the network is WPA3-Enterprise only, select **WPA3-Enterprise only**
-under **Manual setup** and tap **Save settings** before setting up. The
-server doesn't tell the app this.
+6. The app then lists what's still missing, such as location for
+   confirming renewals and notifications for warnings. Both are optional;
+   see [Permissions](#permissions).
 
 ## Renewal
 
@@ -73,16 +70,18 @@ After the phone has connected with the new certificate, the app tells the
 server, which revokes the older ones. Until then, the older certificates
 stay valid until they expire.
 
-The app shows the state of both certificates. It shows a notification if a
-certificate is close to expiring and renewal hasn't worked, or if the
-server has refused the phone.
+The main screen shows whether everything is in order and the details of
+both certificates. A notification warns if a certificate is close to
+expiring and renewal hasn't worked, or if the server has refused the
+phone.
 
-- **Check and renew now** runs the daily check straight away.
-- **Get a new Wi-Fi certificate now** renews even if nothing is due. It
-  refuses while the current certificate hasn't been confirmed.
-- **Remove enrollment** deletes the app's keys and certificates and removes
-  the network from Wi-Fi. It doesn't revoke anything on the server; ask
-  the administrator to disable the device.
+- **Check now** runs the daily check straight away.
+- **Renew certificate** gets a new Wi-Fi certificate even if nothing is
+  due. It refuses while the current certificate hasn't been confirmed.
+- **Remove enrollment** (in the menu) deletes the app's keys and
+  certificates and removes the network from Wi-Fi. It doesn't revoke
+  anything on the server; ask the administrator to disable the device.
+- **Activity log** (in the menu) shows what the app did, for bug reports.
 
 ## Permissions
 
@@ -96,21 +95,20 @@ server has refused the phone.
 
 ## Manual setup
 
-Without an enrollment server, under **Manual setup (fallback)**:
+Without an enrollment server, open **Manual setup** (on the setup screen
+or in the menu) and follow its steps:
 
 1. Enter the SSID exactly as broadcast (including any spaces), the EAP
    identity and the RADIUS server's domain, choose the security type, and
-   tap **Save settings**.
-2. **Import CA certificate (PEM)**: the CA that signed the RADIUS
-   server's certificate.
-3. **Generate key and CSR**, then share, save or copy the CSR and have it
+   tap **Import CA certificate**: the CA that signed the RADIUS server's
+   certificate.
+2. **Generate key and CSR**, then share, save or copy the CSR and have it
    signed by the network's CA.
-4. **Import certificate file (PEM)** or **Paste certificate from
-   clipboard**.
-5. **Add network suggestion**, or **Save network through Settings** to
-   add it as a normal saved network.
-6. Once the phone has connected, **Delete stored key, CSR and
-   certificate**. Wi-Fi keeps its own copy.
+3. **Import file** or **Paste** the signed certificate.
+4. **Add network**, or **Save through Settings** to add it as a normal
+   saved network.
+5. Once the phone has connected, **Delete key and certificate**. Wi-Fi
+   keeps its own copy.
 
 Manual certificates aren't renewed; repeat the steps before they expire.
 

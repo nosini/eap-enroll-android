@@ -11,9 +11,17 @@ import java.util.Base64
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLSocketFactory
 
-/** An error answer from the enrollment server. [message] is the server's text, meant for logs. */
-class EstException(val status: Int, message: String, val retryAfterSeconds: Long? = null) :
-    IOException("HTTP $status: $message")
+/**
+ * An error answer from the enrollment server. [message] is the server's
+ * text, meant for logs. [reason] is the machine-readable reason from the
+ * `Enroll-Error` header (for example `user_disabled`), if the server sent one.
+ */
+class EstException(
+    val status: Int,
+    message: String,
+    val retryAfterSeconds: Long? = null,
+    val reason: String? = null,
+) : IOException("HTTP $status${reason?.let { " ($it)" }.orEmpty()}: $message")
 
 /** The Wi-Fi network the certificates are for, from `wifi/profile`. */
 data class WifiProfile(
@@ -118,7 +126,8 @@ class EstClient(
                 val text = connection.errorStream?.let { readLimited(it) }
                     ?.toString(Charsets.UTF_8)?.lineSequence()?.firstOrNull()?.take(200).orEmpty()
                 val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
-                throw EstException(status, text.ifEmpty { connection.responseMessage ?: "error" }, retryAfter)
+                val reason = connection.getHeaderField("Enroll-Error")?.trim()?.takeIf { reasonPattern.matches(it) }
+                throw EstException(status, text.ifEmpty { connection.responseMessage ?: "error" }, retryAfter, reason)
             }
             val responseBody = if (status == HttpURLConnection.HTTP_NO_CONTENT) {
                 ByteArray(0)
@@ -157,6 +166,7 @@ class EstClient(
         private const val PKCS10 = "application/pkcs10"
         private const val TIMEOUT_MS = 30_000
         private const val MAX_RESPONSE = 256 * 1024
+        private val reasonPattern = Regex("[a-z0-9_]{1,64}")
 
         /** The `Key-Attestation` header: standard base64, one line, of the concatenated DER certificates. */
         fun attestationHeader(chain: List<ByteArray>): String {

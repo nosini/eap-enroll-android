@@ -98,9 +98,20 @@ restarts, needs a network) does whatever is due:
   revoke the old one, and deletes the old key.
 - A failed request is retried by the next daily run, and a run started
   from the app is retried with backoff.
-- 401 means the server no longer accepts the device credential (a new
-  setup link is needed); 403 means the device or user is disabled. Both
-  stop renewal until the app is set up again.
+
+What the app does with the server's refusals. The server names the reason
+in an `Enroll-Error` response header (see
+[Proposals for the server](#proposals-for-the-server)); without it, a 403
+counts as a disabled device.
+
+| Answer | App |
+| --- | --- |
+| 401 | The server doesn't accept the device credential (unknown or expired): stops; needs a new setup link. |
+| 403 `device_disabled`, `credential_reuse` | The device is disabled: stops; needs a new setup link. |
+| 403 `user_disabled` | The account is disabled: stops background checks. "Check and renew now" tries again, since the account can be enabled again. |
+| 403 `attestation_refused` | Only on device credential requests. At setup the app shows it; at renewal the current credential still works, so the app keeps it and the daily check tries again. |
+| 400 `bad_attestation`, 5xx, network errors | Retried later. |
+
 - A notification warns when less than a sixth of a certificate's lifetime
   is left (10 of 60 days) and renewal hasn't worked, and when the server
   refused the phone. On Android 13 and later this needs the notification
@@ -158,6 +169,13 @@ All met by eap-enroll-server:
 
 ## Proposals for the server
 
+- Error answers name their reason in an `Enroll-Error` header, with the
+  reason codes the server already logs (`user_disabled`,
+  `device_disabled`, `credential_reuse`, `attestation_refused`,
+  `bad_attestation`, `too_many_certificates`, `rate_limited`, ...). The
+  body stays text for logs. The app needs it to tell a disabled account
+  and a refused attestation from a disabled device, which all answer 403.
+  Being added to eap-enroll-server; the app already reads the header.
 - `wifi/profile` could say whether the network is WPA3-Enterprise only
   (for example `"security": "wpa3-enterprise"` or `"wpa2-enterprise"`).
   Until then the app has a local setting for it.

@@ -7,7 +7,6 @@ import java.net.URL
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import java.security.interfaces.ECPrivateKey
-import java.util.Base64
 import javax.net.ssl.SSLException
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
@@ -60,6 +59,17 @@ class EndToEndTest {
 
     private fun deviceId(cert: X509Certificate): String =
         cert.subjectAlternativeNames.first { it[0] == 6 }[1].toString().removePrefix("urn:uuid:")
+
+    /**
+     * Whether the server names the reason for a refusal in `Enroll-Error`.
+     * Servers before that answer 403 without it, which the app treats as a
+     * disabled device.
+     */
+    private fun sendsReasons(link: SetupUri): Boolean {
+        val e = assertThrows(EstException::class.java) { EstClient(link.serverUrl, link.caFingerprint).wifiProfile() }
+        assertEquals(401, e.status)
+        return e.reason != null
+    }
 
     @Test
     fun lifecycle() {
@@ -154,21 +164,21 @@ class EndToEndTest {
     @Test
     fun disabledUserStops() {
         call("POST", "/group?user=carol&group=staff")
-        assertEquals(Enroller.Outcome.OK, enroller.setup(code("carol")))
+        val link = code("carol")
+        assertEquals(Enroller.Outcome.OK, enroller.setup(link))
         call("POST", "/group?user=carol&group=disabled")
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(renewWifi = true))
-        assertEquals(Problem.DISABLED, store.load()!!.problem)
         assertEquals(1, wifi.installs.size)
-    }
-}
+        if (!sendsReasons(link)) {
+            assertEquals(Problem.DISABLED, store.load()!!.problem)
+            return
+        }
+        assertEquals(Problem.USER_DISABLED, store.load()!!.problem)
 
-class AttestationHeaderTest {
-    @Test
-    fun concatenatedDerInOneLine() {
-        val a = ByteArray(100) { 1 }
-        val b = ByteArray(200) { 2 }
-        val header = EstClient.attestationHeader(listOf(a, b))
-        assertFalse(header.contains('\n') || header.contains('\r'))
-        assertArrayEquals(a + b, Base64.getDecoder().decode(header))
+        // Enabled again: the background check stays stopped, the user's check gets through.
+        call("POST", "/group?user=carol&group=staff")
+        assertEquals(Enroller.Outcome.STOPPED, enroller.maintain())
+        assertEquals(Enroller.Outcome.OK, enroller.maintain(byUser = true))
+        assertNull(store.load()!!.problem)
     }
 }

@@ -121,7 +121,7 @@ class MainActivity : Activity() {
         }
         column.addView(button("Paste setup link") { pasteSetupLink() })
         column.addView(button("Set up with this link") { setUp() })
-        column.addView(button("Check and renew now") { background("Checking") { enroller.maintain() } })
+        column.addView(button("Check and renew now") { background("Checking") { enroller.maintain(byUser = true) } })
         column.addView(button("Get a new Wi-Fi certificate now") {
             background("Renewing") { enroller.maintain(renewWifi = true) }
         })
@@ -401,7 +401,9 @@ class MainActivity : Activity() {
         }
         when (state.problem) {
             Problem.NEEDS_SETUP -> lines += "PROBLEM: the server no longer accepts this phone; set it up with a new link."
-            Problem.DISABLED -> lines += "PROBLEM: this phone is disabled on the server."
+            Problem.DISABLED -> lines += "PROBLEM: this phone is disabled on the server; set it up with a new link."
+            Problem.USER_DISABLED -> lines += "PROBLEM: your account is disabled on the server. " +
+                "Once it is enabled again, tap \"Check and renew now\"."
             null -> {}
         }
         state.lastError?.let { lines += "Last error (${time.format(Date(state.lastErrorAt))}): $it" }

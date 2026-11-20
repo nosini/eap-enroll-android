@@ -148,7 +148,9 @@ object Notifier {
         if (state == null) return null
         when (state.problem) {
             Problem.NEEDS_SETUP -> return "The enrollment server no longer accepts this phone. Set it up again with a new link."
-            Problem.DISABLED -> return "This phone was disabled on the enrollment server."
+            Problem.DISABLED -> return "This phone was disabled on the enrollment server. Set it up again with a new link."
+            Problem.USER_DISABLED -> return "Your account is disabled on the enrollment server. " +
+                "Once it is enabled again, open the app and tap \"Check and renew now\"."
             null -> {}
         }
         val date = DateFormat.getDateInstance()

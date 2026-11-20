@@ -43,8 +43,15 @@ enum class Problem {
     /** The server no longer accepts the device credential; a new setup link is needed. */
     NEEDS_SETUP,
 
-    /** The administrator disabled the device or user. */
+    /**
+     * The administrator disabled the device, or the server saw a replaced
+     * device credential used again and disabled the device. Needs a new
+     * setup link.
+     */
     DISABLED,
+
+    /** The user's account is disabled. Retried only when the user asks, since it can be enabled again. */
+    USER_DISABLED,
 }
 
 data class EnrollmentState(
@@ -131,7 +138,10 @@ class Enroller(
         /** A temporary failure; try again later. */
         RETRY,
 
-        /** Needs the user: a new setup link, or the device was disabled. */
+        /** Refused in a way that retrying soon won't fix; the daily check tries again. */
+        LATER,
+
+        /** Needs the user: a new setup link, or the device or user was disabled. */
         STOPPED,
     }
 
@@ -164,11 +174,16 @@ class Enroller(
             it.previousDeviceAlias?.let(keys::delete)
         }
         log("Device credential for ${Certs.commonName(chain[0])}, valid until ${chain[0].notAfter}")
-        maintainLocked(renewWifi = true)
+        maintainLocked(renewWifi = true, byUser = true)
     }
 
-    /** Confirms, renews whatever is due, and retries what failed before. */
-    fun maintain(renewWifi: Boolean = false): Outcome = synchronized(LOCK) { maintainLocked(renewWifi) }
+    /**
+     * Confirms, renews whatever is due, and retries what failed before.
+     * [byUser]: the user asked for it, so a disabled user account is tried
+     * again (it may have been enabled since).
+     */
+    fun maintain(renewWifi: Boolean = false, byUser: Boolean = false): Outcome =
+        synchronized(LOCK) { maintainLocked(renewWifi, byUser) }
 
     /**
      * Records that Wi-Fi connected through this app's suggestion at [at].
@@ -198,9 +213,13 @@ class Enroller(
         store.save(null)
     }
 
-    private fun maintainLocked(renewWifi: Boolean): Outcome {
+    private fun maintainLocked(renewWifi: Boolean, byUser: Boolean): Outcome {
         var state = store.load() ?: return Outcome.NOT_ENROLLED
-        if (state.problem != null) return Outcome.STOPPED
+        when (state.problem) {
+            null -> {}
+            Problem.USER_DISABLED -> if (!byUser) return Outcome.STOPPED
+            Problem.NEEDS_SETUP, Problem.DISABLED -> return Outcome.STOPPED
+        }
         val now = clock()
         try {
             if (state.previousDeviceAlias != null) {
@@ -209,23 +228,27 @@ class Enroller(
             if (state.confirmPending && state.connectedAfterInstall) {
                 state = confirmWifi(state)
             }
+            // A refused attestation won't change soon, and the current
+            // credential still works: renew Wi-Fi with it all the same.
+            var attestationRefused: EstException? = null
             if (Certs.renewalDue(state.deviceChain[0], now)) {
-                state = renewDeviceCredential(state)
+                try {
+                    state = renewDeviceCredential(state)
+                } catch (e: EstException) {
+                    if (!isAttestationRefused(e)) throw e
+                    log("Device credential renewal refused; keeping the current credential: ${Errors.describe(e)}")
+                    attestationRefused = e
+                }
             }
             val wifiChain = state.wifiChain
             if (renewWifi || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
                 state = renewWifi(state)
             }
-            store.save(state.copy(lastError = null, lastSuccessAt = clock()))
+            attestationRefused?.let { return refused(state, it) }
+            store.save(state.copy(problem = null, lastError = null, lastSuccessAt = clock()))
             return Outcome.OK
         } catch (e: EstException) {
-            val problem = when (e.status) {
-                401 -> Problem.NEEDS_SETUP
-                403 -> Problem.DISABLED
-                else -> null
-            }
-            fail(state, e, problem)
-            return if (problem != null) Outcome.STOPPED else Outcome.RETRY
+            return refused(state, e)
         } catch (e: IOException) {
             fail(state, e, null)
             return Outcome.RETRY
@@ -241,12 +264,48 @@ class Enroller(
         }
     }
 
+    /** What an error answer from the server means for this phone (the server's docs/protocol.md). */
+    private fun refused(state: EnrollmentState, e: EstException): Outcome = when {
+        e.status == 401 -> {
+            fail(state, e, Problem.NEEDS_SETUP)
+            Outcome.STOPPED
+        }
+        e.status == 403 && e.reason == "user_disabled" -> {
+            fail(state, e, Problem.USER_DISABLED)
+            Outcome.STOPPED
+        }
+        // Only device credential renewal is attested. The current
+        // credential still works; the daily check tries again, and the
+        // expiry warning tells the user if it keeps failing.
+        isAttestationRefused(e) -> {
+            fail(state, e, null)
+            Outcome.LATER
+        }
+        // device_disabled, credential_reuse, or a server that sends no reason.
+        e.status == 403 -> {
+            fail(state, e, Problem.DISABLED)
+            Outcome.STOPPED
+        }
+        else -> {
+            fail(state, e, null)
+            Outcome.RETRY
+        }
+    }
+
+    private fun isAttestationRefused(e: EstException) = e.status == 403 && e.reason == "attestation_refused"
+
     private fun fail(state: EnrollmentState, e: Exception, problem: Problem?) {
         val message = Errors.describe(e)
         log("Enrollment request failed: $message")
-        // The state may have advanced since [state] was read; keep that.
+        // The state may have advanced since [state] was read; keep that. A
+        // user-disabled account retried by the user stays so until a check
+        // gets through.
         val current = store.load() ?: state
-        store.save(current.copy(problem = problem, lastError = message, lastErrorAt = clock()))
+        store.save(current.copy(
+            problem = problem ?: current.problem,
+            lastError = message,
+            lastErrorAt = clock(),
+        ))
     }
 
     private fun client(state: EnrollmentState): EstClient {
@@ -373,11 +432,30 @@ object Errors {
     /** A one-line description for the log and the status, with a hint for errors users can fix. */
     fun describe(e: Throwable): String {
         val text = "${e.javaClass.simpleName}: ${e.message}"
+        if (e is EstException) {
+            serverHint(e)?.let { return "$text. $it" }
+        }
         // socket() fails with EPERM when the app may not use the network:
         // no INTERNET permission, or a "Network" permission toggled off.
         if (e is java.net.SocketException && e.message?.contains("EPERM") == true) {
             return "$text. The app isn't allowed to use the network; allow it in the app's permissions."
         }
         return text
+    }
+
+    private fun serverHint(e: EstException): String? = when {
+        e.reason == "user_disabled" -> "Your account is disabled on the enrollment server."
+        e.reason == "device_disabled" -> "This phone is disabled on the enrollment server; it needs a new setup link."
+        e.reason == "credential_reuse" ->
+            "The server saw this phone's replaced credential used again and disabled the phone; " +
+                "it needs a new setup link."
+        e.reason == "attestation_refused" ->
+            "The server refused this phone's key attestation (for example an unlocked bootloader, " +
+                "or an operating system or key storage it doesn't accept)."
+        e.reason == "bad_attestation" -> "The server requires key attestation and couldn't use this phone's."
+        e.status == 429 -> e.retryAfterSeconds?.let {
+            "The server asks to wait ${(it + 59) / 60} minute(s)."
+        } ?: "The server asks to wait."
+        else -> null
     }
 }

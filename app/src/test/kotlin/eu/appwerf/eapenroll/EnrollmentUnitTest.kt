@@ -173,7 +173,7 @@ class StateJsonTest {
             wifiInstalledAt = 1234,
             confirmPending = true,
             connectedAfterInstall = true,
-            problem = Problem.DISABLED,
+            problem = Problem.USER_DISABLED,
             lastError = "HTTP 403: disabled",
             lastErrorAt = 5678,
             lastSuccessAt = 9012,

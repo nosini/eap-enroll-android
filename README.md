@@ -152,3 +152,7 @@ More detail:
   and the Android behaviour it found.
 - [docs/development.md](docs/development.md): building, tests and
   release signing.
+
+## License
+
+EAP Enroll is licensed under the [Mozilla Public License 2.0](LICENSE).

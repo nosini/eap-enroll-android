@@ -199,7 +199,7 @@ Problems found on the way:
   joining of suggestions for that SSID until the user selects it or turns
   Wi-Fi off and on.
 - Without `setMinimumTlsVersion()` the network allows TLS 1.0; the app now
-  sets TLS 1.2 on Android 13 and later.
+  sets TLS 1.2 on Android 14 and later (the API is new in 14).
 - Some keyboards turned `.` into a space in the domain field; the field now
   uses the URI keyboard and the domain is validated.
 

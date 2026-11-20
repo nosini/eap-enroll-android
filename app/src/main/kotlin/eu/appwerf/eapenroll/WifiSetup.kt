@@ -37,8 +37,8 @@ object WifiSetup {
             caCertificates = settings.caCertificates.toTypedArray()
             domainSuffixMatch = settings.serverDomain
             setClientKeyEntryWithCertificateChain(privateKey, chain.toTypedArray())
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // The default minimum is TLS 1.0.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // The default minimum is TLS 1.0. Settable from Android 14.
                 minimumTlsVersion = WifiEnterpriseConfig.TLS_V1_2
             }
         }

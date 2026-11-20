@@ -40,6 +40,11 @@ build/e2e/e2e-harness -dir build/e2e/phone -eap-enroll /path/to/eap-enroll \
   `deploy/attestation-roots.pem`); no revocation list is fetched.
 - `-device-ttl`: device credential lifetime (default `8760h`, at least
   `1h`), so a renewal comes due within the test.
+- `POST …/code` (control URL in `build/e2e/phone/control`) runs the
+  `eap-enroll` binary, which answers `exit status 1: <its stderr>` on
+  failure. The fake OpenBao has only `alice` enabled (`bob` is
+  disabled); other users need `POST …/group?user=U&group=staff` before
+  `/code` works for them.
 
 The harness puts a TCP proxy in front of the server that connects from a
 different 127.x.y.z address for each connection, so the server's

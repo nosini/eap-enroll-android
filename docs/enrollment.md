@@ -111,9 +111,8 @@ restarts, needs a network) does whatever is due:
   included, until older certificates expire.
 
 What the app does with the server's refusals. The server names the reason
-in an `Enroll-Error` response header (see
-[Proposals for the server](#proposals-for-the-server)); without it, a 403
-counts as a disabled device.
+in an `Enroll-Error` response header; without it, a 403 counts as a
+disabled device.
 
 | Answer | App |
 | --- | --- |
@@ -178,16 +177,12 @@ All met by eap-enroll-server:
 - It accepts EC P-384 Wi-Fi keys and EC P-256 or P-384 device keys.
 - It can require hardware key attestation for device keys
   (`key_attestation`), checked offline against Google's attestation roots.
+- Refusal answers name their reason in an `Enroll-Error` response header
+  (`user_disabled`, `device_disabled`, `credential_reuse`,
+  `attestation_refused`, ...), so the app can tell them apart.
 
 ## Proposals for the server
 
-- Error answers name their reason in an `Enroll-Error` header, with the
-  reason codes the server already logs (`user_disabled`,
-  `device_disabled`, `credential_reuse`, `attestation_refused`,
-  `bad_attestation`, `too_many_certificates`, `rate_limited`, ...). The
-  body stays text for logs. The app needs it to tell a disabled account
-  and a refused attestation from a disabled device, which all answer 403.
-  Being added to eap-enroll-server; the app already reads the header.
 - `wifi/profile` could say whether the network is WPA3-Enterprise only
   (for example `"security": "wpa3-enterprise"` or `"wpa2-enterprise"`).
   Until then the app has a local setting for it.
@@ -221,13 +216,26 @@ Found and fixed on the way:
   `ACCESS_NETWORK_STATE`.
 - Reopening the app from recents filled in the (used) setup link again.
 
+### 2026-11-20: key attestation required
+
+The harness with `-attestation-roots` (eap-enroll-server's
+`deploy/attestation-roots.pem`) and `-device-ttl 1h`, still over
+`adb reverse`, on the same phone running GrapheneOS (verified boot state
+SelfSigned, its own boot key). Worked:
+
+- The device key was generated in StrongBox with an attestation the
+  server verified offline against Google's roots, at setup and at a
+  renewal; `enroll_device` and `reenroll_device` logged
+  `attestation_security_level: StrongBox` and
+  `attestation_device_locked: true`.
+- The renewal came due within the hour: the phone's clock was moved
+  forward to just past 2/3 of the credential's lifetime, and "Check and
+  renew now" made a new attested key. The server issued the new
+  credential and revoked the old one as superseded. The expiry warning
+  the clock jump raised on the old credential ("renewing it failed: not
+  tried yet") cleared on the next check.
+
 ### Still to test
-
-Against the harness with `-attestation-roots` (key attestation required):
-
-- That the phone generates an attested device key in StrongBox, and that
-  the server accepts it for setup and for a renewal (with `-device-ttl 1h`
-  the renewal is due after 40 minutes).
 
 On the real network, once the server is deployed:
 

@@ -95,6 +95,31 @@ class RefusalTest {
     }
 
     @Test
+    fun tooManyRequestsWaitsForRetryAfter() {
+        answer(429, "Retry-After" to "120", "Enroll-Error" to "too_many_certificates")
+        assertEquals(Enroller.Outcome.WAIT, enroller.maintain())
+        assertEquals(now + 120_000, store.load()!!.waitUntil)
+
+        // Not even a check started by the user goes out before then.
+        now += 60_000
+        assertEquals(Enroller.Outcome.WAIT, enroller.maintain(byUser = true))
+        assertEquals(1, server.requests.size)
+
+        now += 61_000
+        answer(502)
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(2, server.requests.size)
+        assertEquals(0, store.load()!!.waitUntil)
+    }
+
+    @Test
+    fun tooManyRequestsWithoutRetryAfterWaitsAWhile() {
+        answer(429)
+        assertEquals(Enroller.Outcome.WAIT, enroller.maintain())
+        assertTrue(store.load()!!.waitUntil >= now + 60_000)
+    }
+
+    @Test
     fun disabledUserIsRetriedOnlyByTheUser() {
         answer(403, "Enroll-Error" to "user_disabled")
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain())

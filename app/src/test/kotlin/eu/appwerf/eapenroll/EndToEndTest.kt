@@ -141,6 +141,29 @@ class EndToEndTest {
     }
 
     @Test
+    fun tooManyCertificatesWaits() {
+        assertEquals(Enroller.Outcome.OK, enroller.setup(code()))
+        // Unconfirmed Wi-Fi certificates pile up until the server refuses
+        // more: too many certificates, or before that too many requests.
+        var outcome = Enroller.Outcome.OK
+        repeat(8) {
+            if (outcome == Enroller.Outcome.OK) outcome = enroller.maintain(renewWifi = true)
+        }
+        assertEquals(Enroller.Outcome.WAIT, outcome)
+        val state = store.load()!!
+        println("Refused: ${state.lastError}")
+        assertTrue(state.lastError!!.contains("HTTP 429"))
+        assertTrue(state.waitUntil > now)
+        assertNull(state.problem)
+
+        // Nothing is sent before the wait is over.
+        val installs = wifi.installs.size
+        assertEquals(Enroller.Outcome.WAIT, enroller.maintain(renewWifi = true, byUser = true))
+        assertEquals(installs, wifi.installs.size)
+        assertEquals(state.lastErrorAt, store.load()!!.lastErrorAt)
+    }
+
+    @Test
     fun codeIsSingleUse() {
         val link = code()
         assertEquals(Enroller.Outcome.OK, enroller.setup(link))

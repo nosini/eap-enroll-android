@@ -280,7 +280,7 @@ class MainActivity : Activity() {
         worker.execute {
             val message = try {
                 val outcome = block()
-                if (outcome == Enroller.Outcome.RETRY) scheduleQuietly { Jobs.runSoon(this) }
+                scheduleQuietly { Jobs.followUp(this, outcome, enroller.state()) }
                 "$what: $outcome"
             } catch (e: Exception) {
                 Log.w(TAG, "$what failed", e)
@@ -405,6 +405,9 @@ class MainActivity : Activity() {
             Problem.USER_DISABLED -> lines += "PROBLEM: your account is disabled on the server. " +
                 "Once it is enabled again, tap \"Check and renew now\"."
             null -> {}
+        }
+        if (state.waitUntil > now) {
+            lines += "Waiting: the server asked for no requests before ${time.format(Date(state.waitUntil))}."
         }
         state.lastError?.let { lines += "Last error (${time.format(Date(state.lastErrorAt))}): $it" }
         if (state.lastSuccessAt > 0) lines += "Last successful check: ${time.format(Date(state.lastSuccessAt))}"

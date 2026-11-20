@@ -97,7 +97,7 @@ restarts, needs a network) does whatever is due:
   uses the new credential once (`wifi/profile`), which makes the server
   revoke the old one, and deletes the old key.
 - A failed request is retried by the next daily run, and a run started
-  from the app is retried with backoff.
+  from the app or after a connection is retried with backoff.
 
 What the app does with the server's refusals. The server names the reason
 in an `Enroll-Error` response header (see
@@ -110,6 +110,7 @@ counts as a disabled device.
 | 403 `device_disabled`, `credential_reuse` | The device is disabled: stops; needs a new setup link. |
 | 403 `user_disabled` | The account is disabled: stops background checks. "Check and renew now" tries again, since the account can be enabled again. |
 | 403 `attestation_refused` | Only on device credential requests. At setup the app shows it; at renewal the current credential still works, so the app keeps it and the daily check tries again. |
+| 429 | Stores the time from `Retry-After` (15 minutes without one, at most a day) and sends nothing before it, not even for a check started by the user. A one-off job runs when the wait is over. |
 | 400 `bad_attestation`, 5xx, network errors | Retried later. |
 
 - A notification warns when less than a sixth of a certificate's lifetime

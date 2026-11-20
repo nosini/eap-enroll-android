@@ -21,12 +21,14 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Background work with the platform JobScheduler: a daily check that renews
- * what is due (and so retries daily), and a one-off run as soon as a
- * network is available, after a confirmed connection or a failed request.
+ * what is due (and so retries daily), a one-off run as soon as a network is
+ * available, after a confirmed connection or a failed request, and a
+ * one-off run when a wait the server asked for is over.
  */
 object Jobs {
     private const val DAILY = 1
     private const val SOON = 2
+    private const val AFTER_WAIT = 3
 
     fun scheduleDaily(context: Context) {
         val scheduler = context.getSystemService(JobScheduler::class.java)
@@ -48,6 +50,27 @@ object Jobs {
         context.getSystemService(JobScheduler::class.java).schedule(job)
     }
 
+    /** Runs the check once [at] has passed (the server's Retry-After). */
+    fun runAt(context: Context, at: Long) {
+        // A second late, so the check doesn't find itself still waiting.
+        val delay = (at - System.currentTimeMillis() + 1_000).coerceAtLeast(0)
+        val job = JobInfo.Builder(AFTER_WAIT, ComponentName(context, RenewJobService::class.java))
+            .setMinimumLatency(delay)
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setPersisted(true)
+            .build()
+        context.getSystemService(JobScheduler::class.java).schedule(job)
+    }
+
+    /** What a check started by the user needs next: a retry soon, or a run after the server's wait. */
+    fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?) {
+        when (outcome) {
+            Enroller.Outcome.RETRY -> runSoon(context)
+            Enroller.Outcome.WAIT -> state?.let { runAt(context, it.waitUntil) }
+            else -> {}
+        }
+    }
+
     fun cancelAll(context: Context) {
         context.getSystemService(JobScheduler::class.java).cancelAll()
     }
@@ -59,13 +82,21 @@ object Jobs {
 class RenewJobService : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         Thread {
+            val enroller = Enrollment.enroller(this)
             val outcome = try {
-                Enrollment.enroller(this).maintain()
+                enroller.maintain()
             } catch (e: Exception) {
                 Log.w(Enrollment.TAG, "Background renewal failed", e)
                 Enroller.Outcome.RETRY
             }
             Log.i(Enrollment.TAG, "Background check: $outcome")
+            if (outcome == Enroller.Outcome.WAIT) {
+                try {
+                    enroller.state()?.let { Jobs.runAt(this, it.waitUntil) }
+                } catch (e: Exception) {
+                    Log.w(Enrollment.TAG, "Scheduling the check after the wait failed", e)
+                }
+            }
             Notifier.update(this)
             jobFinished(params, outcome == Enroller.Outcome.RETRY && Jobs.isSoon(params))
         }.start()

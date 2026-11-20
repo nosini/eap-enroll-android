@@ -9,6 +9,7 @@ import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
+import java.util.Date
 import org.json.JSONObject
 
 /** Keys for the device credential: non-exportable, in the platform keystore on a phone. */
@@ -70,6 +71,8 @@ data class EnrollmentState(
     /** Wi-Fi connected through the suggestion after [wifiInstalledAt]. */
     val connectedAfterInstall: Boolean = false,
     val problem: Problem? = null,
+    /** The server asked (429 with Retry-After) for no requests before this time. */
+    val waitUntil: Long = 0,
     val lastError: String? = null,
     val lastErrorAt: Long = 0,
     val lastSuccessAt: Long = 0,
@@ -86,6 +89,7 @@ data class EnrollmentState(
         put("confirm_pending", confirmPending)
         put("connected_after_install", connectedAfterInstall)
         problem?.let { put("problem", it.name) }
+        put("wait_until", waitUntil)
         lastError?.let { put("last_error", it) }
         put("last_error_at", lastErrorAt)
         put("last_success_at", lastSuccessAt)
@@ -104,6 +108,7 @@ data class EnrollmentState(
             confirmPending = json.optBoolean("confirm_pending"),
             connectedAfterInstall = json.optBoolean("connected_after_install"),
             problem = json.optStringOrNull("problem")?.let { Problem.valueOf(it) },
+            waitUntil = json.optLong("wait_until"),
             lastError = json.optStringOrNull("last_error"),
             lastErrorAt = json.optLong("last_error_at"),
             lastSuccessAt = json.optLong("last_success_at"),
@@ -135,8 +140,11 @@ class Enroller(
         NOT_ENROLLED,
         OK,
 
-        /** A temporary failure; try again later. */
+        /** A temporary failure; try again soon (with backoff). */
         RETRY,
+
+        /** The server asked to wait until [EnrollmentState.waitUntil]; nothing is sent before then. */
+        WAIT,
 
         /** Refused in a way that retrying soon won't fix; the daily check tries again. */
         LATER,
@@ -221,6 +229,10 @@ class Enroller(
             Problem.NEEDS_SETUP, Problem.DISABLED -> return Outcome.STOPPED
         }
         val now = clock()
+        if (now < state.waitUntil) {
+            log("The server asked for no requests before ${Date(state.waitUntil)}")
+            return Outcome.WAIT
+        }
         try {
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
@@ -245,7 +257,7 @@ class Enroller(
                 state = renewWifi(state)
             }
             attestationRefused?.let { return refused(state, it) }
-            store.save(state.copy(problem = null, lastError = null, lastSuccessAt = clock()))
+            store.save(state.copy(problem = null, waitUntil = 0, lastError = null, lastSuccessAt = clock()))
             return Outcome.OK
         } catch (e: EstException) {
             return refused(state, e)
@@ -286,6 +298,11 @@ class Enroller(
             fail(state, e, Problem.DISABLED)
             Outcome.STOPPED
         }
+        e.status == 429 -> {
+            val seconds = (e.retryAfterSeconds ?: DEFAULT_WAIT_S).coerceIn(1, MAX_WAIT_S)
+            fail(state, e, null, waitUntil = clock() + seconds * 1000)
+            Outcome.WAIT
+        }
         else -> {
             fail(state, e, null)
             Outcome.RETRY
@@ -294,7 +311,7 @@ class Enroller(
 
     private fun isAttestationRefused(e: EstException) = e.status == 403 && e.reason == "attestation_refused"
 
-    private fun fail(state: EnrollmentState, e: Exception, problem: Problem?) {
+    private fun fail(state: EnrollmentState, e: Exception, problem: Problem?, waitUntil: Long = 0) {
         val message = Errors.describe(e)
         log("Enrollment request failed: $message")
         // The state may have advanced since [state] was read; keep that. A
@@ -303,6 +320,7 @@ class Enroller(
         val current = store.load() ?: state
         store.save(current.copy(
             problem = problem ?: current.problem,
+            waitUntil = waitUntil,
             lastError = message,
             lastErrorAt = clock(),
         ))
@@ -397,6 +415,10 @@ class Enroller(
 
         /** Connections reported this soon after installing a certificate may predate it. */
         const val INSTALL_SETTLE_MS = 10_000L
+
+        /** Waits for a 429 without (or with a nonsensical) Retry-After. */
+        private const val DEFAULT_WAIT_S = 15 * 60L
+        private const val MAX_WAIT_S = 24 * 3600L
 
         private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
     }

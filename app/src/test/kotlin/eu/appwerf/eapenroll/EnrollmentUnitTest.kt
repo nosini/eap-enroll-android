@@ -174,6 +174,7 @@ class StateJsonTest {
             confirmPending = true,
             connectedAfterInstall = true,
             problem = Problem.USER_DISABLED,
+            waitUntil = 3456,
             lastError = "HTTP 403: disabled",
             lastErrorAt = 5678,
             lastSuccessAt = 9012,

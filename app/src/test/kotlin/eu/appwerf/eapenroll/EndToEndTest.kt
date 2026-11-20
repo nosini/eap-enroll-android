@@ -129,6 +129,9 @@ class EndToEndTest {
         assertTrue(oldDevice in revoked("pki-enroll"))
         assertEquals(3, wifi.installs.size)
         assertNull(state.lastError)
+        // Requests after the renewal used only the new credential; the
+        // server would have disabled the device if the replaced one came back.
+        assertNull(state.problem)
 
         // Disabled by the administrator.
         call("POST", "/disable?device=${deviceId(state.deviceChain[0])}")
@@ -138,6 +141,28 @@ class EndToEndTest {
         println("After disable: ${state.problem}, ${state.lastError}")
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain())
         assertEquals(3, wifi.installs.size)
+    }
+
+    @Test
+    fun reusedCredentialDisablesDevice() {
+        val link = code()
+        assertEquals(Enroller.Outcome.OK, enroller.setup(link))
+        val old = store.load()!!
+        val oldCredential = ClientCredential(keys.keyPair(old.deviceAlias).private, old.deviceChain)
+        now += 300L * 86_400_000
+        assertEquals(Enroller.Outcome.OK, enroller.maintain())
+        assertTrue(old.deviceChain[0].serialNumber in revoked("pki-enroll"))
+
+        // A copy of the replaced credential: the server disables the device.
+        val e = assertThrows(EstException::class.java) {
+            EstClient(link.serverUrl, link.caFingerprint, oldCredential).wifiProfile()
+        }
+        assertEquals(403, e.status)
+        if (sendsReasons(link)) assertEquals("credential_reuse", e.reason)
+
+        assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(renewWifi = true))
+        assertEquals(Problem.DISABLED, store.load()!!.problem)
+        assertTrue(store.load()!!.deviceChain[0].serialNumber in revoked("pki-enroll"))
     }
 
     @Test

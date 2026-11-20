@@ -136,7 +136,8 @@ func (f *fakeBao) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
 	var body map[string]any
 	if r.Method == http.MethodPost {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// revoke-self has no body.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 			reply(w, 400, map[string]any{"errors": []string{"bad json"}})
 			return
 		}
@@ -164,6 +165,8 @@ func (f *fakeBao) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, map[string]any{"data": map[string]any{"revocation_time": time.Now().Unix()}})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/crl/rotate"):
 		reply(w, 200, map[string]any{"data": map[string]any{"success": true}})
+	case r.Method == http.MethodPost && path == "auth/token/revoke-self":
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		reply(w, 404, map[string]any{"errors": []string{"no handler for " + path}})
 	}
@@ -287,7 +290,18 @@ func main() {
 	server := exec.Command(*bin, "serve", "-config", config)
 	server.Stdout, server.Stderr = serverLog, serverLog
 	must(0, server.Start())
-	defer server.Process.Signal(syscall.SIGTERM)
+	exited := make(chan error, 1)
+	go func() { exited <- server.Wait() }()
+	// On the way out, let the server finish (it revokes its OpenBao token
+	// at exit) before the fake OpenBao goes away with this process.
+	defer func() {
+		server.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			server.Process.Kill()
+		}
+	}()
 	for i := 0; ; i++ {
 		c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
@@ -338,8 +352,6 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	exited := make(chan error, 1)
-	go func() { exited <- server.Wait() }()
 	select {
 	case <-stop:
 	case err := <-exited:

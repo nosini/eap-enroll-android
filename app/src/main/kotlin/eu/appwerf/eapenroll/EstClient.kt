@@ -33,6 +33,12 @@ data class WifiProfile(
 /**
  * EST client for the enrollment server (see the server's docs/protocol.md).
  * Without [credential] only the unauthenticated requests work.
+ *
+ * Use one client per credential. Each client has its own SSLContext, so no
+ * pooled connection or resumed TLS session can carry another credential's
+ * certificate. Renewal depends on this: after a new device credential has
+ * been stored, presenting the old one (even in a resumed session) makes the
+ * server disable the device as if the credential had been copied.
  */
 class EstClient(
     serverUrl: String,

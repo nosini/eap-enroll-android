@@ -93,9 +93,15 @@ restarts, needs a network) does whatever is due:
   with the same SSID and security type replaces the old one and its key in
   Wi-Fi's keystore (AOSP `WifiNetworkSuggestionsManager.add()`).
 - At 2/3 of the device credential's lifetime: a new Keystore key (attested
-  for the current credential) and `device/simplereenroll`. The app then
-  uses the new credential once (`wifi/profile`), which makes the server
-  revoke the old one, and deletes the old key.
+  for the current credential) and `device/simplereenroll`. The app stores
+  the new credential and then uses it once (`wifi/profile`), which makes
+  the server revoke the old one, and deletes the old key.
+- Once the new credential is stored, the old one is never used again: the
+  server treats a replaced credential that comes back as copied, disables
+  the device and revokes its certificates. All requests run one at a time
+  under one lock, and each credential gets its own HTTP client with its
+  own TLS context, so no pooled connection or resumed TLS session carries
+  the old certificate.
 - A failed request is retried by the next daily run, and a run started
   from the app or after a connection is retried with backoff.
 - "Get a new Wi-Fi certificate now" refuses while the current certificate

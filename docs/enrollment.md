@@ -4,7 +4,7 @@ Updated 2026-11-20. The app gets its certificates from an enrollment
 server instead of manual signing, and renews them before they expire. The
 client is built, tested against the server on a computer
 ([end-to-end test](../e2e/README.md)) and on a phone against a test server
-([phone tests](#phone-tests)); the test on the real network is still open.
+([phone tests](#phone-tests)), and on the real network since 2026-11-20.
 
 The server is a separate project, eap-enroll-server. Its
 `docs/protocol.md` is the reference for the requests; this file describes
@@ -235,16 +235,41 @@ SelfSigned, its own boot key). Worked:
   the clock jump raised on the old credential ("renewing it failed: not
   tried yet") cleared on the next check.
 
+### 2026-11-20: on the real network
+
+The same phone (GrapheneOS) against the deployed eap-enroll-server, with
+key attestation required, and the network's FreeRADIUS. Worked:
+
+- Setup from a one-time code: the device key in StrongBox with
+  attestation, then the first Wi-Fi certificate. FreeRADIUS logged the
+  login through the app's suggestion.
+- The post-connection broadcast with "while using the app" location:
+  turning Wi-Fi off and on with the app open confirmed the certificate.
+- A manual renewal ("Get a new Wi-Fi certificate now") after the current
+  certificate had been revoked by hand: the new certificate was installed
+  in the suggestion, the phone reconnected, the app confirmed it, and the
+  server revoked the older one as superseded.
+- The same in the background: a renewal over a VPN that reaches the
+  server, then the app left with the home button and Wi-Fi turned off and
+  on. With "all the time" location the app confirmed the new certificate
+  without being opened, and the server revoked the older one.
+
+Found on the way:
+
+- A VPN app in tunnel mode accepts the app's connection itself; if its
+  routing doesn't reach the server, it closes the connection and setup
+  fails with `SSLHandshakeException: connection closed` while the server
+  logs nothing. Either let the VPN reach the server or exclude this app
+  from it.
+- GrapheneOS Camera reads the setup QR code and shows the `eapenroll://`
+  link, but doesn't offer to open it in the app; paste the link into the
+  app's setup field instead. Other camera or QR apps are untested.
+- A Wi-Fi certificate revoked outside the server (for example by hand in
+  OpenBao) still counts as valid there; the app recovers with a renewal as
+  long as it can reach the server, through the old connection or another
+  network.
+
 ### Still to test
 
-On the real network, once the server is deployed:
-
-- That the RADIUS server accepts the enrolled certificate and the phone
-  connects through the suggestion.
-- That replacing the suggestion keeps Wi-Fi working and the next connection
-  uses the new key.
-- That the post-connection broadcast arrives with "while using the app"
-  location while the app is open, and with "all the time" in the
-  background, and that the confirmation revokes the old certificate.
-- That the camera app opens `eapenroll://` links from a QR code.
-- That the daily job runs on its own.
+- That the daily job runs on its own and a renewal comes due without help
+  (the first at about two thirds of 60 days).

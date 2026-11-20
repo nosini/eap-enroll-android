@@ -11,3 +11,6 @@ build/
 *.jks
 *.local.md
 /AGENT-HANDOFF.md
+# Release signing: local builds read keystore.properties, CI repository secrets.
+*.base64
+/keystore.properties

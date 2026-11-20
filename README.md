@@ -26,5 +26,51 @@ Needs JDK 17 and an Android SDK with platform 36.1.
 
 The APK ends up in `app/build/outputs/apk/debug/`.
 
+### Release builds
+
+GitHub Actions runs the unit tests and lint and builds a release APK on
+every push to `main` (download it from the run's artifacts). For `v*` tags
+it also publishes the APK as a GitHub release; the tag must match
+`versionName` and be reachable from `main`. Signing needs two repository
+secrets:
+
+- `SIGNING_KEYSTORE_BASE64`: the keystore, base64-encoded
+  (`base64 -w0 release.jks`)
+- `SIGNING_STORE_PASSWORD`: its password (PKCS12, so it's also the key
+  password)
+
+The key alias is `eapenroll`. The repository variable `SIGNING_CERT_SHA256`
+holds the SHA-256 of the signing certificate (from `keytool -list -v`),
+which the workflow compares with the built APK. Only `main` and `v*` tag
+builds are signed; other branches and forks build unsigned. Artifacts are
+named `eap-enroll-$version.apk`, with the short commit hash added off tags.
+
+Make the key outside the checkout:
+
+    keytool -genkeypair -keystore release.jks -storetype PKCS12 \
+        -alias eapenroll -keyalg EC -groupname secp384r1 \
+        -sigalg SHA384withECDSA -validity 10000 -dname "CN=EAP Enroll"
+
+Keep it backed up outside GitHub: without it, a new build can't update an
+installed app, and an uninstall deletes the app's keys and Wi-Fi network.
+
+Locally, put the signing details in a gitignored `keystore.properties` next
+to `settings.gradle.kts` (`SIGNING_*` environment variables take
+precedence; a relative `storeFile` is relative to the checkout). Without
+it, `assembleRelease` writes an unsigned APK.
+
+```properties
+storeFile=/path/to/release.jks
+storePassword=...
+keyAlias=eapenroll
+```
+
+A release build can't be installed over a debug build: the signing keys
+differ. Android's key rotation would allow it, but a rotated app's key
+attestation names the oldest certificate in its signing history
+(`KeyAttestationApplicationIdProviderService` reads `GET_SIGNATURES`),
+which would make the debug key the app's attested identity for good. So
+switch by uninstalling the debug build and enrolling again.
+
 [e2e/README.md](e2e/README.md) describes the end-to-end test against the
 enrollment server.

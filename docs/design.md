@@ -1,6 +1,7 @@
 # Design
 
-First draft, 2026-11-20. None of this has been tested yet.
+First draft, 2026-11-20. Phase 0 has been tested and works; see
+[phase 0 results](phase0-results.md). The later phases are untested plans.
 
 ## Goal
 

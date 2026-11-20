@@ -1,4 +1,4 @@
-# Phase 0 results
+# Handing an app-generated key to Wi-Fi
 
 ## Conclusion
 

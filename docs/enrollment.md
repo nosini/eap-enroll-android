@@ -14,8 +14,8 @@ what the app does with them.
 
 1. **Wi-Fi certificate**: CN = username, from the network's EAP CA. Its key
    is an EC P-384 key generated in software for each certificate and handed
-   to Wi-Fi in a network suggestion (phase 0). After that the app can't use
-   the key, and it keeps no copy.
+   to Wi-Fi in a network suggestion (see [key handover](key-handover.md)).
+   After that the app can't use the key, and it keeps no copy.
 2. **Device credential**: a client certificate for the enrollment server
    only. Its key is an EC P-256 key in the app's Android Keystore
    (non-exportable, StrongBox if the phone has it, otherwise the TEE) and
@@ -162,7 +162,8 @@ still returns success and keeps the old suggestion (AOSP logs
 `Enterprise network install failure`). The app can't tell, and a later
 connection with the old certificate would confirm the new one. The old
 certificate is then revoked and the phone needs a renewal over another
-network. This hasn't happened in testing; the import worked in phase 0.
+network. This hasn't happened in testing; the import worked in the key
+handover test.
 
 ## Requirements on the server
 

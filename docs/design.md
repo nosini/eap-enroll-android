@@ -1,7 +1,8 @@
 # Design
 
-First draft, 2026-11-20. Phase 0 has been tested and works; see
-[phase 0 results](phase0-results.md). The later phases are untested plans.
+First draft, 2026-11-20. Handing an app-generated key to Wi-Fi has been
+tested and works; see [key handover](key-handover.md). Enrollment and
+renewal are built as described in [enrollment](enrollment.md).
 
 ## Goal
 
@@ -19,7 +20,7 @@ Play Store, and writing an EST or SCEP server (see
 
 Generating the key in hardware isn't possible on an unmanaged phone: Wi-Fi
 only takes a hardware key from KeyChain when a device or profile owner has
-granted it to Wi-Fi. See [phase 0 results](phase0-results.md) for the
+granted it to Wi-Fi. See [key handover](key-handover.md) for the
 details and the managed alternatives.
 
 ## Network settings
@@ -32,9 +33,8 @@ The app isn't tied to one network. These are set in the app:
 - CA certificate(s) for validating the RADIUS server, imported as PEM
 - later, the enrollment (EST) endpoint
 
-A plain input screen is enough for phase 0. Real values never go into
-tracked source, resources or tests; tests use names like
-`radius.example.org`.
+A plain input screen is enough. Real values never go into tracked source,
+resources or tests; tests use names like `radius.example.org`.
 
 ## Test setup
 
@@ -68,13 +68,13 @@ What that means for the app:
   what the test phone supports. P-256 is fine for the proof of concept if
   the CA's client role accepts it.
 
-## Phase 0
+## Key handover to Wi-Fi
 
 One question first: does Wi-Fi accept a key the app generated and handed
 over, and does the connection work? Nothing else is worth building if it
 doesn't.
 
-Signing stays manual in this phase. The app exports a CSR (as a file or as
+Signing stays manual for this test. The app exports a CSR (as a file or as
 text), it's signed on the CA, and the app imports the certificate.
 
 ### Flow
@@ -110,7 +110,7 @@ Open questions for the phone test:
 
 ### Results
 
-Results go in `docs/phase0-results.md`: what worked, what didn't (with the
+Results go in `docs/key-handover.md`: what worked, what didn't (with the
 exact exception or `logcat` lines; filter on `WifiService`,
 `wpa_supplicant`, `WifiKeyStore`, `EapEnroll`), the device details, and the
 FreeRADIUS log lines for the test login (the reject reason is in
@@ -120,7 +120,7 @@ If Wi-Fi doesn't accept the key, the fallback is the system certificate
 installer (`KeyChain.createInstallIntent()` with a PKCS#12 made on the
 phone), which needs the user to pick "Wi-Fi" and add the network by hand.
 
-## Later phases (only once phase 0 works)
+## Enrollment and renewal
 
 Built as described in [enrollment](enrollment.md), which has the details
 and what changed on the way.
@@ -151,7 +151,8 @@ covered by the CRL and the users file.
 
 No EST or SCEP server gets written in this project. Options, in order:
 
-1. Manual signing, as in phase 0, for as long as that's enough.
+1. Manual signing, as in the key handover test, for as long as that's
+   enough.
 2. A small enrollment service in front of the CA, built and run as part
    of the network's infrastructure, not in this repository.
    [Enrollment](enrollment.md) describes the app's side and what it needs

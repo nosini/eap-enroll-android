@@ -146,7 +146,7 @@ More detail:
 - [docs/enrollment.md](docs/enrollment.md): setup, renewal, confirmation,
   and how the app handles the server's answers.
 - [docs/design.md](docs/design.md): the design and the reasoning behind it.
-- [docs/phase0-results.md](docs/phase0-results.md): the proof of concept
+- [docs/key-handover.md](docs/key-handover.md): the proof of concept
   and the Android behaviour it found.
 - [docs/development.md](docs/development.md): building, tests and
   release signing.

@@ -149,9 +149,10 @@ covered by the CRL and the users file.
 No EST or SCEP server gets written in this project. Options, in order:
 
 1. Manual signing, as in phase 0, for as long as that's enough.
-2. An existing RFC 7030 server in front of OpenBao, such as
-   `mabunixda/est-service` (not reviewed yet), or native EST in OpenBao if
-   it ever lands (openbao/openbao issue 1222; check where it stands).
+2. A small enrollment service in front of the CA, built and run as part
+   of the network's infrastructure, not in this repository.
+   [Enrollment](enrollment.md) describes the app's side and what it needs
+   from that service.
 
 The app should speak standard EST (`/.well-known/est/simpleenroll`,
 `simplereenroll`, `cacerts`) against a configurable endpoint, so the

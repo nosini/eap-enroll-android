@@ -5,11 +5,14 @@
 - Read `README.md` and `docs/design.md`. The design is a draft, and several
   Android API assumptions in it are marked as unverified. Check them
   against the Android documentation and on a real device.
+- If `AGENT-HANDOFF.md` exists, read it: it's the untracked hand-over from
+  the previous session.
 - If `docs/private.local.md` exists, read it as well. It's gitignored and
   has my network's values, where my infrastructure repository lives, and
   details of the build environment.
-- Phase 0 (`docs/design.md#phase-0`) comes first. No enrollment protocol,
-  server work or renewal until phase 0 has a recorded result.
+- Phase 0 is done (`docs/phase0-results.md`). Enrollment and renewal are
+  next: the app's side is `docs/enrollment.md`; the enrollment server is
+  built in my infrastructure repository, not here.
 - My infrastructure repository is for reading facts, not for editing from
   here. If the app needs a server-side change, write it up as a proposal.
 

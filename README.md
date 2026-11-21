@@ -137,7 +137,7 @@ Manual certificates aren't renewed; repeat the steps before they expire.
   forgotten.** Android then stops connecting to the app's network on its own.
   Select the network in Wi-Fi settings once, or turn Wi-Fi off and on.
 - **Renewals aren't confirmed.** Check the location permission. With the
-  app open, turning Wi-Fi off and on confirms within about half a minute
+  app open, turning Wi-Fi off and on confirms within a minute or so
   (or tap **Check now** once it has reconnected).
 
 ## How it works

@@ -191,7 +191,12 @@ new certificate was installed:
 - Without location permission, or if the phone never reconnects while the
   app may hear it, nothing is confirmed and the older certificates simply
   expire. Turning Wi-Fi off and on (quick settings) with the app open
-  confirms at once.
+  confirms within about half a minute, or at once with "Check now".
+- The broadcast only records the connection; the confirmation itself runs
+  as a background job 30 seconds later. Right after Wi-Fi connects, the
+  network (and an always-on VPN) is still switching over: on the phone, a
+  confirmation sent at once stalled in its TLS handshake until the server
+  gave up after 10 seconds.
 
 A connection through the server proves nothing: the phone may reach it
 over mobile data or a VPN.

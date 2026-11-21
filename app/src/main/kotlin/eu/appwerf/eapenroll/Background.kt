@@ -22,8 +22,9 @@ import java.util.concurrent.TimeUnit
 /**
  * Background work with the platform JobScheduler: a daily check that renews
  * what is due (and so retries daily), a one-off run as soon as a network is
- * available, after a confirmed connection or a failed request, and a
- * one-off run when a wait the server asked for is over.
+ * available after a failed request, the same half a minute after Wi-Fi
+ * connected with a new certificate, and a one-off run when a wait the server
+ * asked for is over.
  */
 object Jobs {
     private const val DAILY = 1
@@ -41,8 +42,18 @@ object Jobs {
         scheduler.schedule(job)
     }
 
-    fun runSoon(context: Context) {
+    /**
+     * Wi-Fi has just connected: networks and VPNs are still switching over,
+     * and a connection opened now can be cut in the middle of its TLS
+     * handshake. Seen on a phone with an always-on VPN, where the
+     * confirmation sent at once stalled until the server gave up.
+     */
+    const val AFTER_CONNECTION_DELAY_MS = 30_000L
+
+    /** Runs the check once a network is available, not before [delayMs]. */
+    fun runSoon(context: Context, delayMs: Long = 0) {
         val job = JobInfo.Builder(SOON, ComponentName(context, RenewJobService::class.java))
+            .setMinimumLatency(delayMs)
             .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
             .setBackoffCriteria(TimeUnit.MINUTES.toMillis(30), JobInfo.BACKOFF_POLICY_EXPONENTIAL)
             .setPersisted(true)
@@ -131,7 +142,7 @@ class ConnectionReceiver : BroadcastReceiver() {
                 // getSsid() returns the plain SSID; tolerate quotes all the same.
                 val connected = suggestion?.ssid?.removeSurrounding("\"")
                 if (ssid != null && connected == ssid && enroller.connectionObserved(at)) {
-                    Jobs.runSoon(context)
+                    Jobs.runSoon(context, Jobs.AFTER_CONNECTION_DELAY_MS)
                 }
             } catch (e: Exception) {
                 Log.w(Enrollment.TAG, "Handling the connection broadcast failed", e)

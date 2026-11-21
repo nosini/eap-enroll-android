@@ -503,7 +503,8 @@ class MainActivity : Activity() {
                 describe(action, outcome, after, before)
             } catch (e: Exception) {
                 AppLog.add("${action.name.lowercase()} failed: ${Errors.describe(e)}")
-                getString(R.string.result_failed, Errors.describe(e))
+                val advice = if (action == Action.SETUP) Enroller.setupLinkAdvice(e)?.let { "\n\n$it" } else null
+                getString(R.string.result_failed, Errors.describe(e)) + advice.orEmpty()
             }
             Notifier.update(this)
             val setUp = action == Action.SETUP && runCatching { enroller.state() != null }.getOrDefault(false)

@@ -154,6 +154,10 @@ class EndToEndTest {
         assertTrue(old.deviceChain[0].serialNumber in revoked("pki-enroll"))
 
         // A copy of the replaced credential: the server disables the device.
+        // It compares connection times to the second, and treats a
+        // connection opened in the second the credential was replaced as
+        // older (401 credential_superseded), so the copy comes a second later.
+        Thread.sleep(1_100)
         val e = assertThrows(EstException::class.java) {
             EstClient(link.serverUrl, link.caFingerprint, oldCredential).wifiProfile()
         }

@@ -1,6 +1,8 @@
 package eu.appwerf.eapenroll
 
 import com.sun.net.httpserver.HttpsConfigurator
+import com.sun.net.httpserver.HttpsExchange
+import com.sun.net.httpserver.HttpsParameters
 import com.sun.net.httpserver.HttpsServer
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -8,10 +10,12 @@ import java.security.KeyPair
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.Collections
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
 import org.json.JSONObject
 
 /**
@@ -81,11 +85,16 @@ fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").di
  * A local HTTPS server that answers every request with [answer], for
  * testing how the client handles the server's error answers. Its
  * certificate is for "localhost", issued by [ca]; [caFingerprint] goes where
- * the setup link's fingerprint would. It doesn't ask for client
- * certificates.
+ * the setup link's fingerprint would. It asks for a client certificate
+ * without requiring one, accepts any, and records it.
  */
 class FakeEstServer : AutoCloseable {
-    class Request(val method: String, val path: String, val headers: Map<String, String>)
+    class Request(
+        val method: String,
+        val path: String,
+        val headers: Map<String, String>,
+        val clientCertificate: X509Certificate?,
+    )
     class Answer(val status: Int, val body: String = "", val headers: Map<String, String> = emptyMap())
 
     private val root = TestPki.root("Fake EST Root")
@@ -106,12 +115,18 @@ class FakeEstServer : AutoCloseable {
         }
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
             .apply { init(store, password) }.keyManagers
-        httpsConfigurator = HttpsConfigurator(SSLContext.getInstance("TLS").apply { init(keyManagers, null, null) })
+        val context = SSLContext.getInstance("TLS").apply { init(keyManagers, arrayOf(AcceptAnyClient()), null) }
+        httpsConfigurator = object : HttpsConfigurator(context) {
+            override fun configure(params: HttpsParameters) {
+                params.setSSLParameters(context.defaultSSLParameters.apply { wantClientAuth = true })
+            }
+        }
         createContext("/") { exchange ->
             val request = Request(
                 exchange.requestMethod,
                 exchange.requestURI.path.removePrefix("/.well-known/est/"),
                 exchange.requestHeaders.mapKeys { it.key.lowercase() }.mapValues { it.value.first() },
+                runCatching { (exchange as HttpsExchange).sslSession.peerCertificates[0] as X509Certificate }.getOrNull(),
             )
             exchange.requestBody.readBytes()
             requests += request
@@ -127,6 +142,15 @@ class FakeEstServer : AutoCloseable {
     }
 
     val url: String = "https://localhost:${server.address.port}"
+
+    private class AcceptAnyClient : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) =
+            throw CertificateException("not a client")
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+    }
 
     override fun close() = server.stop(0)
 }

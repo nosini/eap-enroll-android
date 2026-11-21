@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -164,6 +165,100 @@ class RefusalTest {
     }
 
     @Test
+    fun supersededConnectionReconnectsWithTheCurrentCredential() {
+        server.answer = {
+            if (server.requests.size == 1) {
+                FakeEstServer.Answer(401, "replaced\n", mapOf("Enroll-Error" to "credential_superseded"))
+            } else {
+                FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+        // Retried at once; the retry's failure decides what happens next.
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(listOf("device/simplereenroll", "device/simplereenroll"), server.requests.map { it.path })
+        server.requests.forEach {
+            assertEquals(credential, it.clientCertificate)
+            assertEquals("close", it.headers["connection"])
+        }
+        val state = store.load()!!
+        assertNull(state.problem)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+    }
+
+    @Test
+    fun supersededAgainIsRetriedLater() {
+        answer(401, "Enroll-Error" to "credential_superseded")
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(2, server.requests.size)
+        assertNull(store.load()!!.problem)
+    }
+
+    @Test
+    fun failedRenewalIsRepeatedWithTheSameCredential() {
+        answer(500)
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(listOf("device/simplereenroll", "device/simplereenroll"), server.requests.map { it.path })
+        server.requests.forEach { assertEquals(credential, it.clientCertificate) }
+        // A new key each time, attested for the credential still in use.
+        keys.challenges.takeLast(2).forEach { assertArrayEquals(sha256(credential.encoded), it) }
+        val state = store.load()!!
+        assertEquals(credential, state.deviceChain[0])
+        assertNull(state.previousDeviceAlias)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+    }
+
+    @Test
+    fun expiredCredentialNeedsSetupWithoutAsking() {
+        answer(500)
+        now = credential.notAfter.time
+        assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(renewWifi = true, byUser = true))
+        assertTrue(server.requests.isEmpty())
+        val state = store.load()!!
+        assertEquals(Problem.NEEDS_SETUP, state.problem)
+        assertTrue(state.lastError!!.contains("expired"))
+        // No key was made for a renewal that couldn't work.
+        assertEquals(1, keys.created.size)
+        assertTrue(Notifier.attentionText(state, now)!!.contains("expired"))
+    }
+
+    @Test
+    fun setupDoesNotOfferTheCurrentCredential() {
+        answer(400, "Enroll-Error" to "bad_request")
+        val link = SetupUri.parse(
+            "eapenroll://setup?v=1&url=${server.url}&ca=${server.caFingerprint}&code=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+        )
+        val e = runCatching { enroller.setup(link) }.exceptionOrNull() as EstException
+        val request = server.requests.single()
+        assertEquals("device/simpleenroll", request.path)
+        assertNull(request.clientCertificate)
+        assertEquals("close", request.headers["connection"])
+        assertEquals("The setup link wasn't used up and can be tried again.", Enroller.setupLinkAdvice(e))
+        // The current enrollment is untouched.
+        assertEquals(credential, store.load()!!.deviceChain[0])
+    }
+
+    @Test
+    fun caCertificatesWithoutTheCredential() {
+        answer(503)
+        val client = EstClient(server.url, server.caFingerprint, ClientCredential(keys.keyPair(store.load()!!.deviceAlias).private, listOf(credential)))
+        runCatching { client.wifiCaCertificates() }
+        runCatching { client.wifiProfile() }
+        assertEquals(listOf("wifi/cacerts", "wifi/profile"), server.requests.map { it.path })
+        assertNull(server.requests[0].clientCertificate)
+        assertEquals(credential, server.requests[1].clientCertificate)
+    }
+
+    @Test
+    fun closedClientSendsNothing() {
+        answer(503)
+        val client = EstClient(server.url, server.caFingerprint)
+        client.close()
+        assertThrows(IllegalStateException::class.java) { client.wifiProfile() }
+        assertTrue(server.requests.isEmpty())
+    }
+
+    @Test
     fun setupAttestsTheCode() {
         store.save(null)
         answer(400, "Enroll-Error" to "bad_attestation")
@@ -198,6 +293,26 @@ class AttestationHeaderTest {
         assertTrue(Errors.describe(e).contains("refused this phone's key attestation"))
         assertTrue(Errors.describe(EstException(429, "too many requests", 90)).contains("wait 2 minute"))
         assertEquals("EstException: HTTP 500: internal error", Errors.describe(EstException(500, "internal error")))
+    }
+}
+
+class SetupLinkAdviceTest {
+    private fun advice(status: Int, reason: String? = null) = Enroller.setupLinkAdvice(EstException(status, "x", reason = reason))
+
+    @Test
+    fun followsTheServersOrderOfChecks() {
+        for (reason in listOf("bad_code", "code_used", "code_expired")) {
+            assertTrue(reason, advice(401, reason)!!.contains("a new one is needed"))
+        }
+        assertTrue(advice(400, "bad_attestation")!!.contains("wasn't used up"))
+        assertTrue(advice(413, "body_too_large")!!.contains("wasn't used up"))
+        assertTrue(advice(403, "attestation_refused")!!.contains("wasn't used up"))
+        assertTrue(advice(502, "attestation_status_unavailable")!!.contains("wasn't used up"))
+        assertTrue(advice(403, "user_disabled")!!.contains("used up; a new one"))
+        assertTrue(advice(429, "too_many_certificates")!!.contains("used up; a new one"))
+        assertTrue(advice(502, "openbao_error")!!.contains("may have been used up"))
+        assertTrue(advice(500)!!.contains("may have been used up"))
+        assertNull(Enroller.setupLinkAdvice(java.io.IOException("network")))
     }
 }
 

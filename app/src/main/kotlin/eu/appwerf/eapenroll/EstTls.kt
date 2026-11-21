@@ -10,7 +10,6 @@ import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
-import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509TrustManager
@@ -85,19 +84,19 @@ object EstTls {
     }
 
     /**
-     * A socket factory trusting [fingerprintHex], optionally presenting
-     * [credential]. The protocol version is left to the platform; the
-     * server only accepts TLS 1.3.
+     * A TLS context trusting [fingerprintHex], optionally presenting
+     * [credential]. Its session cache is its own, so sessions are never
+     * shared with another context. The protocol version is left to the
+     * platform; the server only accepts TLS 1.3.
      */
-    fun socketFactory(fingerprintHex: String, credential: ClientCredential?): SSLSocketFactory {
-        val context = SSLContext.getInstance("TLS")
-        context.init(
-            credential?.let { arrayOf(CredentialKeyManager(it)) },
-            arrayOf(PinnedTrustManager(fingerprintHex)),
-            null,
-        )
-        return context.socketFactory
-    }
+    fun context(fingerprintHex: String, credential: ClientCredential?): SSLContext =
+        SSLContext.getInstance("TLS").apply {
+            init(
+                credential?.let { arrayOf(CredentialKeyManager(it)) },
+                arrayOf(PinnedTrustManager(fingerprintHex)),
+                null,
+            )
+        }
 }
 
 object Hex {

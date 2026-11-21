@@ -178,7 +178,14 @@ object Notifier {
     fun attentionText(state: EnrollmentState?, now: Long): String? {
         if (state == null) return null
         when (state.problem) {
-            Problem.NEEDS_SETUP -> return "The enrollment server no longer accepts this phone. Set it up again with a new link."
+            Problem.NEEDS_SETUP -> {
+                val device = state.deviceChain[0]
+                if (now >= device.notAfter.time) {
+                    return "The enrollment credential expired on ${DateFormat.getDateInstance().format(device.notAfter)}. " +
+                        "Set the phone up again with a new link."
+                }
+                return "The enrollment server no longer accepts this phone. Set it up again with a new link."
+            }
             Problem.DISABLED -> return "This phone was disabled on the enrollment server. Set it up again with a new link."
             Problem.USER_DISABLED -> return "Your account is disabled on the enrollment server. " +
                 "Once it is enabled again, open the app and tap \"Check now\"."

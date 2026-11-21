@@ -45,7 +45,8 @@ Releases are signed with this certificate (check with
 1. Ask the network's administrator for a setup code. They run
    `eap-enroll code` on the server, which shows a QR code with an
    `eapenroll://setup?...` link. The code works once and expires after a
-   few minutes.
+   few minutes. If setup fails, the app says whether the same link can be
+   tried again or a new one is needed.
 2. Scan the QR code. If the camera app opens the link, EAP Enroll opens
    with it filled in. Otherwise copy the link, open EAP Enroll and tap
    **Paste link**.
@@ -69,6 +70,11 @@ The new certificate is used from the next connection.
 After the phone has connected with the new certificate, the app tells the
 server, which revokes the older ones. Until then, the older certificates
 stay valid until they expire.
+
+The app's own credential for the server is renewed the same way, at two
+thirds of its lifetime (for example after eight months of a year). If the phone
+misses that, for example because it was off for months, the credential
+expires and the phone needs a new setup link.
 
 The main screen shows whether everything is in order and the details of
 both certificates. A notification warns if a certificate is close to

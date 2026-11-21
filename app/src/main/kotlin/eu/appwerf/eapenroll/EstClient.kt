@@ -1,6 +1,7 @@
 package eu.appwerf.eapenroll
 
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.math.BigInteger
@@ -9,7 +10,7 @@ import java.net.URL
 import java.security.cert.X509Certificate
 import java.util.Base64
 import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.SSLContext
 
 /**
  * An error answer from the enrollment server. [message] is the server's
@@ -34,19 +35,32 @@ data class WifiProfile(
  * EST client for the enrollment server (see the server's docs/protocol.md).
  * Without [credential] only the unauthenticated requests work.
  *
- * Use one client per credential. Each client has its own SSLContext, so no
- * pooled connection or resumed TLS session can carry another credential's
- * certificate. Renewal depends on this: after a new device credential has
- * been stored, presenting the old one (even in a resumed session) makes the
- * server disable the device as if the credential had been copied.
+ * Use one client per credential and [close] it when switching to a renewed
+ * one. After a new device credential has been stored, presenting the old
+ * one makes the server disable the device as if the credential had been
+ * copied, so nothing may carry the old certificate:
+ *
+ * - Each client has its own SSLContext, so its TLS sessions are never
+ *   resumed by another client; [close] invalidates them and refuses further
+ *   requests.
+ * - Every request asks for `Connection: close`, so no connection stays in
+ *   the platform's pool after its answer.
+ * - The credential is offered only on the requests that need it, never on
+ *   `cacerts` or `device/simpleenroll`: the server checks a client
+ *   certificate in the handshake, and an expired one would fail even the
+ *   setup with a new code.
  */
 class EstClient(
     serverUrl: String,
     private val caFingerprint: String,
     private val credential: ClientCredential? = null,
-) {
+) : Closeable {
     private val base = SetupUri.normalizeServerUrl(serverUrl) + "/.well-known/est/"
-    private val socketFactory: SSLSocketFactory = EstTls.socketFactory(caFingerprint, credential)
+    private val anonymous: SSLContext = EstTls.context(caFingerprint, null)
+    private val authenticated: SSLContext? = credential?.let { EstTls.context(caFingerprint, it) }
+
+    @Volatile
+    private var closed = false
 
     /**
      * Device credential for the Keystore key in [csr], authorized by the
@@ -54,7 +68,9 @@ class EstClient(
      * leaf first), generated with SHA-256 of [code] as the challenge.
      */
     fun enrollDevice(code: String, csr: ByteArray, attestation: List<ByteArray>? = null): List<X509Certificate> =
-        certificates(post("device/simpleenroll", PKCS10, encodeCsr(csr), bearer = code, headers = attestationHeaders(attestation)))
+        certificates(
+            post("device/simpleenroll", PKCS10, encodeCsr(csr), bearer = code, headers = attestationHeaders(attestation), withCredential = false),
+        )
 
     /**
      * New device credential; authenticated with the current one.
@@ -83,7 +99,20 @@ class EstClient(
         return Profiles.parse(response.body)
     }
 
-    fun wifiCaCertificates(): List<X509Certificate> = certificates(request("GET", "wifi/cacerts", null, null, null)!!)
+    fun wifiCaCertificates(): List<X509Certificate> =
+        certificates(request("GET", "wifi/cacerts", null, null, null, withCredential = false)!!)
+
+    /**
+     * Invalidates this client's TLS sessions; later requests throw. Its
+     * connections aren't pooled, so none is left open.
+     */
+    override fun close() {
+        closed = true
+        listOfNotNull(anonymous, authenticated).forEach { context ->
+            val sessions = context.clientSessionContext ?: return@forEach
+            sessions.ids.toList().forEach { sessions.getSession(it)?.invalidate() }
+        }
+    }
 
     private class Response(val status: Int, val contentType: String?, val body: ByteArray)
 
@@ -93,7 +122,8 @@ class EstClient(
         body: ByteArray,
         bearer: String? = null,
         headers: Map<String, String> = emptyMap(),
-    ): Response = request("POST", path, contentType, body, bearer, headers = headers)!!
+        withCredential: Boolean = true,
+    ): Response = request("POST", path, contentType, body, bearer, headers = headers, withCredential = withCredential)!!
 
     private fun attestationHeaders(chain: List<ByteArray>?): Map<String, String> =
         chain?.let { mapOf("Key-Attestation" to attestationHeader(it)) } ?: emptyMap()
@@ -106,16 +136,22 @@ class EstClient(
         bearer: String?,
         allowNotFound: Boolean = false,
         headers: Map<String, String> = emptyMap(),
+        withCredential: Boolean = true,
     ): Response? {
+        check(!closed) { "This client was closed; its credential may have been replaced" }
+        val context = if (withCredential) authenticated ?: anonymous else anonymous
         val connection = URL(base + path).openConnection() as HttpsURLConnection
         try {
-            connection.sslSocketFactory = socketFactory
+            connection.sslSocketFactory = context.socketFactory
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.instanceFollowRedirects = false
             connection.useCaches = false
             connection.requestMethod = method
             connection.setRequestProperty("Accept", "*/*")
+            // Not kept alive: a pooled connection keeps the client
+            // certificate of its handshake.
+            connection.setRequestProperty("Connection", "close")
             bearer?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
             headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
             if (body != null) {

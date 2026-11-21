@@ -1,6 +1,6 @@
 # Enrollment and renewal: the app's side
 
-Updated 2026-11-20. The app gets its certificates from an enrollment
+Updated 2026-11-21. The app gets its certificates from an enrollment
 server instead of manual signing, and renews them before they expire. The
 client is built, tested against the server on a computer
 ([end-to-end test](../e2e/README.md)) and on a phone against a test server
@@ -69,6 +69,10 @@ eapenroll://setup?ca=<SHA-256 hex>&code=<one-time code>&url=https://enroll.examp
 - The app trusts only the CA with that fingerprint for the server, taken
   from the server's own chain; no trust on first use. The code is never
   logged.
+- Setup never offers the device credential, even when the phone is
+  already enrolled: the server checks a client certificate in the TLS
+  handshake, and an expired one would fail the handshake before the code
+  is looked at.
 
 Then the app:
 
@@ -78,6 +82,17 @@ Then the app:
    CA certificates), so no network settings have to be typed in;
 3. gets the first Wi-Fi certificate (`wifi/simpleenroll`) and installs it
    as a network suggestion with identity = the certificate's CN.
+
+If the first step fails, the app says whether the same link can be tried
+again. The server checks the code first, then the request and the key
+attestation, and only then uses the code up:
+
+| Answer to `device/simpleenroll` | The link |
+| --- | --- |
+| 401 (`bad_code`, `code_used`, `code_expired`) | Not valid; a new one is needed. |
+| 400, 413, 403 `attestation_refused`, 502 `attestation_status_unavailable` | Not used up; can be tried again. |
+| 403 `user_disabled`, 429 | Used up; a new one is needed. |
+| Other 5xx | May have been used up: try again, and a 401 then means it was. |
 
 Only the WPA2/WPA3 choice stays a setting in the app, because the profile
 doesn't say whether the network is WPA3-Enterprise only (see
@@ -96,12 +111,34 @@ restarts, needs a network) does whatever is due:
   for the current credential) and `device/simplereenroll`. The app stores
   the new credential and then uses it once (`wifi/profile`), which makes
   the server revoke the old one, and deletes the old key.
+- If the renewal fails or its answer is lost, the app keeps the current
+  credential, deletes the new key, and the next check renews again with
+  the same credential (and another new key). The server retires a
+  credential it issued but never saw used, so only the credential from an
+  answer that actually arrived is ever stored and used.
 - Once the new credential is stored, the old one is never used again: the
   server treats a replaced credential that comes back as copied, disables
-  the device and revokes its certificates. All requests run one at a time
-  under one lock, and each credential gets its own HTTP client with its
-  own TLS context, so no pooled connection or resumed TLS session carries
-  the old certificate.
+  the device and revokes its certificates. So:
+  - All requests run one at a time under one lock; nothing else runs
+    during a renewal.
+  - Each credential gets its own HTTP client with its own TLS context
+    (and session cache). Right after storing the new credential the app
+    closes the old client: its TLS sessions are invalidated and it
+    refuses further requests.
+  - Every request sends `Connection: close`, so no connection opened with
+    the old certificate stays in the platform's connection pool.
+  - Should a request still come over a connection opened with a replaced
+    credential, the server answers `401 credential_superseded` and leaves
+    the device enabled. The app then closes its client and runs the check
+    once more from the stored state with a new client for the current
+    credential; a second `credential_superseded` is retried later.
+- The device credential is offered only on the requests that need it
+  (`wifi/*`, `device/simplereenroll`), never on `cacerts` or
+  `device/simpleenroll`.
+- The app checks the device credential's expiry itself before using it.
+  The server refuses an expired one in the TLS handshake, which would
+  otherwise look like a network error and be retried forever; an expired
+  credential needs a new setup link.
 - A failed request is retried by the next daily run, and a run started
   from the app or after a connection is retried with backoff.
 - "Renew certificate" refuses while the current certificate
@@ -116,7 +153,9 @@ disabled device.
 
 | Answer | App |
 | --- | --- |
-| 401 | The server doesn't accept the device credential (unknown or expired): stops; needs a new setup link. |
+| 401 | The server doesn't accept the device credential (unknown or revoked): stops; needs a new setup link. |
+| 401 `credential_superseded` | The connection was opened with a replaced credential: reconnects with the current one and retries once; if that gets it again, retried later. |
+| (no request) | The device credential has expired: stops without contacting the server; needs a new setup link. |
 | 403 `device_disabled`, `credential_reuse` | The device is disabled: stops; needs a new setup link. |
 | 403 `user_disabled` | The account is disabled: stops background checks. "Check now" tries again, since the account can be enabled again. |
 | 403 `attestation_refused` | Only on device credential requests. At setup the app shows it; at renewal the current credential still works, so the app keeps it and the daily check tries again. |
@@ -274,3 +313,7 @@ Found on the way:
 
 - That the daily job runs on its own and a renewal comes due without help
   (the first at about two thirds of 60 days).
+- A device credential renewal with the changes of 2026-11-21 (client
+  closed at the switch, `Connection: close`, no credential on `cacerts`
+  and `device/simpleenroll`). Tested so far against the server on a
+  computer, where Java's `HttpsURLConnection` stands in for Android's.

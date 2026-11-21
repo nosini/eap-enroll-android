@@ -127,7 +127,11 @@ data class EnrollmentState(
  *
  * All methods block on network I/O; call them off the main thread. One
  * lock per process serialises them, so the background job and the UI don't
- * interleave.
+ * interleave, and no request with the old device credential runs while it
+ * is being renewed.
+ *
+ * Requests with the device credential go through one [EstClient] at a time,
+ * closed when the credential is replaced and at the end of every call.
  */
 class Enroller(
     private val keys: DeviceKeys,
@@ -162,13 +166,17 @@ class Enroller(
      */
     fun setup(link: SetupUri): Outcome = synchronized(LOCK) {
         log("Setting up with ${link.serverUrl}")
+        closeClient()
         // The server checks attestation against the code as sent in the
         // Authorization header.
         val alias = keys.create(challenge = sha256(link.code.toByteArray(Charsets.US_ASCII)))
         val chain = try {
             val keyPair = keys.keyPair(alias)
-            val chain = EstClient(link.serverUrl, link.caFingerprint)
-                .enrollDevice(link.code, Csr.create(keyPair, "eap-enroll"), keys.attestation(alias))
+            // Without the current credential, if there is one: the server
+            // would refuse an expired one in the handshake.
+            val chain = EstClient(link.serverUrl, link.caFingerprint).use {
+                it.enrollDevice(link.code, Csr.create(keyPair, "eap-enroll"), keys.attestation(alias))
+            }
             checkIssued(chain, keyPair.public)
             chain
         } catch (e: Exception) {
@@ -182,7 +190,11 @@ class Enroller(
             it.previousDeviceAlias?.let(keys::delete)
         }
         log("Device credential for ${Certs.commonName(chain[0])}, valid until ${chain[0].notAfter}")
-        maintainLocked(renewWifi = true, byUser = true)
+        try {
+            maintainLocked(renewWifi = true, byUser = true)
+        } finally {
+            closeClient()
+        }
     }
 
     /**
@@ -191,7 +203,13 @@ class Enroller(
      * again (it may have been enabled since).
      */
     fun maintain(renewWifi: Boolean = false, byUser: Boolean = false): Outcome =
-        synchronized(LOCK) { maintainLocked(renewWifi, byUser) }
+        synchronized(LOCK) {
+            try {
+                maintainLocked(renewWifi, byUser)
+            } finally {
+                closeClient()
+            }
+        }
 
     /**
      * Records that Wi-Fi connected through this app's suggestion at [at].
@@ -221,7 +239,15 @@ class Enroller(
         store.save(null)
     }
 
-    private fun maintainLocked(renewWifi: Boolean, byUser: Boolean): Outcome {
+    /**
+     * [reconnect]: a request answered `401 credential_superseded` came over a
+     * connection opened with a credential that has been replaced since. The
+     * whole check then runs once more from the stored state, with a new
+     * client for the current credential: every step is safe to repeat, and
+     * a device credential renewal is meant to be repeated with the same old
+     * credential when it failed.
+     */
+    private fun maintainLocked(renewWifi: Boolean, byUser: Boolean, reconnect: Boolean = true): Outcome {
         var state = store.load() ?: return Outcome.NOT_ENROLLED
         when (state.problem) {
             null -> {}
@@ -234,6 +260,8 @@ class Enroller(
             return Outcome.WAIT
         }
         try {
+            // Before anything else, such as making a key for a renewal that can't work.
+            checkNotExpired(state.deviceChain[0])
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
             }
@@ -260,7 +288,15 @@ class Enroller(
             store.save(state.copy(problem = null, waitUntil = 0, lastError = null, lastSuccessAt = clock()))
             return Outcome.OK
         } catch (e: EstException) {
+            if (reconnect && isSuperseded(e)) {
+                log("The server says the connection's credential was replaced; reconnecting with the current one")
+                closeClient()
+                return maintainLocked(renewWifi, byUser, reconnect = false)
+            }
             return refused(state, e)
+        } catch (e: CredentialExpiredException) {
+            fail(state, e, Problem.NEEDS_SETUP)
+            return Outcome.STOPPED
         } catch (e: IOException) {
             fail(state, e, null)
             return Outcome.RETRY
@@ -278,6 +314,12 @@ class Enroller(
 
     /** What an error answer from the server means for this phone (the server's docs/protocol.md). */
     private fun refused(state: EnrollmentState, e: EstException): Outcome = when {
+        // Even a new connection with the current credential got it. Not a
+        // refusal of the device: try again later.
+        isSuperseded(e) -> {
+            fail(state, e, null)
+            Outcome.RETRY
+        }
         e.status == 401 -> {
             fail(state, e, Problem.NEEDS_SETUP)
             Outcome.STOPPED
@@ -311,6 +353,8 @@ class Enroller(
 
     private fun isAttestationRefused(e: EstException) = e.status == 403 && e.reason == "attestation_refused"
 
+    private fun isSuperseded(e: EstException) = e.status == 401 && e.reason == "credential_superseded"
+
     private fun fail(state: EnrollmentState, e: Exception, problem: Problem?, waitUntil: Long = 0) {
         val message = Errors.describe(e)
         log("Enrollment request failed: $message")
@@ -326,12 +370,41 @@ class Enroller(
         ))
     }
 
+    private var client: EstClient? = null
+    private var clientCredential: X509Certificate? = null
+
+    /**
+     * The client for the stored device credential. Reused within a call,
+     * replaced (and the old one closed) when the credential changes. An
+     * expired credential isn't offered at all: the server would fail the
+     * handshake, and only a new setup link helps.
+     */
     private fun client(state: EnrollmentState): EstClient {
+        val certificate = state.deviceChain[0]
+        checkNotExpired(certificate)
+        client?.let { if (clientCredential == certificate) return it }
+        closeClient()
         val keyPair = keys.keyPair(state.deviceAlias)
         return EstClient(state.serverUrl, state.caFingerprint, ClientCredential(keyPair.private, state.deviceChain))
+            .also { client = it; clientCredential = certificate }
     }
 
-    /** Uses the new device credential once, which makes the server revoke the old one, then deletes the old key. */
+    private fun checkNotExpired(credential: X509Certificate) {
+        if (clock() >= credential.notAfter.time) throw CredentialExpiredException(credential.notAfter)
+    }
+
+    /** Closes the device credential's client: its TLS sessions are dropped and it refuses further requests. */
+    private fun closeClient() {
+        client?.close()
+        client = null
+        clientCredential = null
+    }
+
+    /**
+     * Uses the new device credential once, which makes the server revoke the
+     * old one, then deletes the old key. Until this has worked, the old
+     * credential stays stored but is never used again.
+     */
     private fun retirePreviousCredential(state: EnrollmentState): EnrollmentState {
         val profile = client(state).wifiProfile() ?: state.profile
         state.previousDeviceAlias?.let(keys::delete)
@@ -366,9 +439,16 @@ class Enroller(
             keys.delete(alias)
             throw e
         }
+        // A failed or lost renewal throws above and leaves the current
+        // credential in place: the next check renews again with it, and the
+        // server retires what the lost one issued. Only a credential from an
+        // answer that arrived is ever stored.
         state.previousDeviceAlias?.let(keys::delete)
         val next = state.copy(deviceAlias = alias, deviceChain = chain, previousDeviceAlias = state.deviceAlias)
         store.save(next)
+        // From here on only the new credential: no connection or TLS session
+        // of the old one may be used again.
+        closeClient()
         log("New device credential, valid until ${chain[0].notAfter}")
         return retirePreviousCredential(next)
     }
@@ -423,6 +503,25 @@ class Enroller(
         private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
         /**
+         * Whether the setup link can be tried again after [setup] failed with
+         * [e], from the order in which the server checks `device/simpleenroll`
+         * (the server's docs/protocol.md). Null when it can't be said.
+         */
+        fun setupLinkAdvice(e: Throwable): String? {
+            if (e !is EstException) return null
+            return when {
+                e.status == 401 -> "The setup link is no longer valid (used, expired or mistyped); a new one is needed."
+                e.status == 400 || e.status == 413 || e.reason == "attestation_refused" ||
+                    e.reason == "attestation_status_unavailable" ->
+                    "The setup link wasn't used up and can be tried again."
+                e.status == 403 || e.status == 429 -> "The setup link is used up; a new one is needed."
+                e.status >= 500 -> "The setup link may have been used up. Try it again; " +
+                    "if the server then says the code is no longer valid, a new link is needed."
+                else -> null
+            }
+        }
+
+        /**
          * Why a Wi-Fi certificate asked for by the user should not be
          * requested now, or null if it may. Every new certificate stays valid
          * until it expires or a newer one is confirmed, and the server allows
@@ -440,6 +539,10 @@ class Enroller(
         }
     }
 }
+
+/** The device credential has expired; the server would refuse it in the TLS handshake. Needs a new setup link. */
+class CredentialExpiredException(val notAfter: Date) :
+    GeneralSecurityException("The device credential expired on $notAfter")
 
 object Certs {
     /** The first CN of the subject, or "" if there is none. */
@@ -474,6 +577,9 @@ object Errors {
         if (e is EstException) {
             serverHint(e)?.let { return "$text. $it" }
         }
+        if (e is CredentialExpiredException) {
+            return "$text. This phone needs a new setup link."
+        }
         // socket() fails with EPERM when the app may not use the network:
         // no INTERNET permission, or a "Network" permission toggled off.
         if (e is java.net.SocketException && e.message?.contains("EPERM") == true) {
@@ -492,6 +598,8 @@ object Errors {
             "The server refused this phone's key attestation (for example an unlocked bootloader, " +
                 "or an operating system or key storage it doesn't accept)."
         e.reason == "bad_attestation" -> "The server requires key attestation and couldn't use this phone's."
+        e.reason == "credential_superseded" ->
+            "The server says the connection used a replaced credential; the next check reconnects."
         e.status == 429 -> e.retryAfterSeconds?.let {
             "The server asks to wait ${(it + 59) / 60} minute(s)."
         } ?: "The server asks to wait."

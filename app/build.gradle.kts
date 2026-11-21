@@ -16,17 +16,17 @@ fun signingValue(property: String, env: String): String? =
 android {
     namespace = "eu.appwerf.eapenroll"
     compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
+        version = release(37) {
+            minorApiLevel = 2
         }
     }
 
     defaultConfig {
         applicationId = "eu.appwerf.eapenroll"
         minSdk = 31
-        targetSdk = 36
-        versionCode = 4
-        versionName = "0.2.2"
+        targetSdk = 37
+        versionCode = 5
+        versionName = "0.3.0"
     }
 
     signingConfigs {

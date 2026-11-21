@@ -95,6 +95,7 @@ phone.
 | --- | --- |
 | Wi-Fi and network state | Adding the network, and running the daily check only when online. |
 | Network (GrapheneOS) | Reaching the enrollment server. |
+| Nearby devices (Android 17) | Reaching an enrollment server on the local network. The app asks only for local network access (`ACCESS_LOCAL_NETWORK`), which Android lists under Nearby devices; it has no Bluetooth or Wi-Fi device scanning permissions. Asked for when setting up; without it, Android drops connections to local addresses and they time out. Not needed for a server on the internet. |
 | Location, "all the time" (optional) | Android only tells an app that a connection through its network worked if the app may read Wi-Fi scan results, which needs location. With "only while using the app", renewals are confirmed only while the app is open. Without it, they're not confirmed at all. |
 | Notifications (optional) | Warnings about failing renewals. |
 | Run at startup | Keeping the daily check scheduled after a restart. |
@@ -123,6 +124,9 @@ Manual certificates aren't renewed; repeat the steps before they expire.
 - **Setup fails with "connection closed".** A VPN app may be taking the
   connection and unable to reach the server. Let the VPN reach the server,
   or exclude EAP Enroll from the VPN.
+- **Setup or renewal times out.** On Android 17, an enrollment server on
+  the local network needs the **Nearby devices** permission. Allow it in
+  the app's settings, or tap **Allow nearby devices** on the main screen.
 - **The camera shows the link but doesn't open the app.** Some camera
   apps, including GrapheneOS Camera, don't open `eapenroll://` links. Paste
   the link instead.

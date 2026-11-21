@@ -585,6 +585,12 @@ object Errors {
         if (e is java.net.SocketException && e.message?.contains("EPERM") == true) {
             return "$text. The app isn't allowed to use the network; allow it in the app's permissions."
         }
+        // Android 17 drops connections to the local network silently
+        // without the Nearby devices permission.
+        if (e is java.net.SocketTimeoutException) {
+            return "$text. If the enrollment server is on the local network, allow the app's " +
+                "Nearby devices permission; otherwise check the network or VPN."
+        }
         return text
     }
 

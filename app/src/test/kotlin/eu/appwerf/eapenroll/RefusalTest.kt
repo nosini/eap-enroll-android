@@ -293,6 +293,7 @@ class AttestationHeaderTest {
         assertTrue(Errors.describe(e).contains("refused this phone's key attestation"))
         assertTrue(Errors.describe(EstException(429, "too many requests", 90)).contains("wait 2 minute"))
         assertEquals("EstException: HTTP 500: internal error", Errors.describe(EstException(500, "internal error")))
+        assertTrue(Errors.describe(java.net.SocketTimeoutException("connect timed out")).contains("Nearby devices"))
     }
 }
 

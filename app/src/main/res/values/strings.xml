@@ -69,6 +69,9 @@
     <string name="task_background_title">Confirm renewals in the background</string>
     <string name="task_background_text">With location allowed all the time, renewals are confirmed without opening the app.</string>
     <string name="task_background_action">Allow all the time</string>
+    <string name="task_local_network_title">Reach a server on your network</string>
+    <string name="task_local_network_text">If the enrollment server is on your local network, Android lets the app reach it only with local network access, which Android lists under Nearby devices. The app asks for nothing else in that group, such as Bluetooth. Without it, renewals time out.</string>
+    <string name="task_local_network_action">Allow nearby devices</string>
     <string name="task_notifications_title">Get renewal warnings</string>
     <string name="task_notifications_text">The app warns when a certificate is close to expiring and renewing it failed.</string>
     <string name="task_notifications_action">Allow notifications</string>

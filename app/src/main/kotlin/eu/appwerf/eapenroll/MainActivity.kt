@@ -73,6 +73,9 @@ class MainActivity : Activity() {
     /** The user asked to set up again while enrolled (menu or a scanned link). */
     private var setupRequested = false
 
+    /** A setup waiting for the answer to the local network permission request. */
+    private var pendingSetup: SetupUri? = null
+
     private val approvalListener = WifiManager.SuggestionUserApprovalStatusListener { status ->
         if (approval != status) AppLog.add("Suggestion approval: ${WifiSetup.approvalName(status)}")
         approval = status
@@ -337,6 +340,11 @@ class MainActivity : Activity() {
                 requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQUEST_LOCATION)
             }
         }
+        if (!localNetworkGranted()) {
+            task(TASK_LOCAL_NETWORK, R.string.task_local_network_title, R.string.task_local_network_text, R.string.task_local_network_action) {
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
+            }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
             task(TASK_NOTIFICATIONS, R.string.task_notifications_title, R.string.task_notifications_text, R.string.task_notifications_action) {
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
@@ -462,6 +470,18 @@ class MainActivity : Activity() {
             return
         }
         prefs.edit().putBoolean(NetworkPrefs.WPA3, setupWpa3.isChecked).apply()
+        // Asked for before the first request: the app can't tell whether the
+        // server is on the local network, and a blocked connection only times
+        // out. Setup goes ahead whatever the answer.
+        if (!localNetworkGranted()) {
+            pendingSetup = link
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
+            return
+        }
+        startSetup(link)
+    }
+
+    private fun startSetup(link: SetupUri) {
         run(Action.SETUP) {
             val outcome = enroller.setup(link)
             scheduleQuietly { Jobs.scheduleDaily(this) }
@@ -580,8 +600,16 @@ class MainActivity : Activity() {
             "${permissions[it].substringAfterLast('.')}=" +
                 if (grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
         })
+        if (requestCode == REQUEST_LOCAL_NETWORK) {
+            pendingSetup?.let(::startSetup)
+            pendingSetup = null
+        }
         refresh()
     }
+
+    /** Android 17 blocks connections to the local network without this permission. */
+    private fun localNetworkGranted() =
+        Build.VERSION.SDK_INT < 37 || granted(Manifest.permission.ACCESS_LOCAL_NETWORK)
 
     private fun deviceInfo(): String {
         val strongBox = packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
@@ -593,11 +621,13 @@ class MainActivity : Activity() {
     private companion object {
         const val REQUEST_LOCATION = 5
         const val REQUEST_NOTIFICATIONS = 6
+        const val REQUEST_LOCAL_NETWORK = 7
         const val PREF_DISMISSED = "dismissed_tasks"
         const val TASK_APPROVE = "approve"
         const val TASK_LOCATION = "location"
         const val TASK_BACKGROUND = "background_location"
         const val TASK_NOTIFICATIONS = "notifications"
+        const val TASK_LOCAL_NETWORK = "local_network"
         const val MENU_WIFI = 1
         const val MENU_SET_UP_AGAIN = 2
         const val MENU_MANUAL = 3

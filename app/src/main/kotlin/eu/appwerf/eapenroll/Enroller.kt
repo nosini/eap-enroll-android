@@ -601,8 +601,9 @@ object Errors {
             "The server saw this phone's replaced credential used again and disabled the phone; " +
                 "it needs a new setup link."
         e.reason == "attestation_refused" ->
-            "The server refused this phone's key attestation (for example an unlocked bootloader, " +
-                "or an operating system or key storage it doesn't accept)."
+            "The server refused this phone's key attestation: for example a missing security update " +
+                "(install it, then try again), an unlocked bootloader, or an operating system or key " +
+                "storage it doesn't accept."
         e.reason == "bad_attestation" -> "The server requires key attestation and couldn't use this phone's."
         e.reason == "credential_superseded" ->
             "The server says the connection used a replaced credential; the next check reconnects."

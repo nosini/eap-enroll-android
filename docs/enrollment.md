@@ -158,7 +158,7 @@ disabled device.
 | (no request) | The device credential has expired: stops without contacting the server; needs a new setup link. |
 | 403 `device_disabled`, `credential_reuse` | The device is disabled: stops; needs a new setup link. |
 | 403 `user_disabled` | The account is disabled: stops background checks. "Check now" tries again, since the account can be enabled again. |
-| 403 `attestation_refused` | Only on device credential requests. At setup the app shows it; at renewal the current credential still works, so the app keeps it and the daily check tries again. |
+| 403 `attestation_refused` | Only on device credential requests (for example an OS the server doesn't accept, or a security patch level that is too old). At setup the app shows it; at renewal the current credential still works, so the app keeps it and the daily check tries again with a new key, which passes once the phone is updated. |
 | 429 | Stores the time from `Retry-After` (15 minutes without one, at most a day) and sends nothing before it, not even for a check started by the user. A one-off job runs when the wait is over. |
 | 400 `bad_attestation`, 5xx, network errors | Retried later. |
 
@@ -223,6 +223,9 @@ All met by eap-enroll-server:
 - It accepts EC P-384 Wi-Fi keys and EC P-256 or P-384 device keys.
 - It can require hardware key attestation for device keys
   (`key_attestation`), checked offline against Google's attestation roots.
+  It accepts `SelfSigned` verified boot (such as GrapheneOS) only for OS
+  keys it has pinned, and it can refuse a phone whose security patch
+  level is older than a set age.
 - Refusal answers name their reason in an `Enroll-Error` response header
   (`user_disabled`, `device_disabled`, `credential_reuse`,
   `attestation_refused`, ...), so the app can tell them apart.

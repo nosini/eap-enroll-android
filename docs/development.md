@@ -18,11 +18,14 @@ then builds and signs the release APK, and publishes it as a GitHub
 release. Tests and lint run in a job of their own that never gets the
 signing secrets; the signing job builds without a Gradle cache, daemon or
 configuration cache, so nothing from the test run or the build keeps the
-key.
-The tag must match `versionName` and be reachable from `main`:
+key. The tag must match `versionName` and be reachable from `main`:
 
     git tag -s v0.2.0 -m "EAP Enroll 0.2.0"
     git push origin v0.2.0
+
+Re-running the workflow for a tag whose release is already published
+fails rather than replacing the APK; it only finishes a draft that an
+earlier run left behind. For a fixed build, release a new version.
 
 Signing needs two repository secrets:
 

@@ -144,6 +144,12 @@ Manual certificates aren't renewed; repeat the steps before they expire.
 - **The phone doesn't connect after the network was disconnected or
   forgotten.** Android then stops connecting to the app's network on its own.
   Select the network in Wi-Fi settings once, or turn Wi-Fi off and on.
+- **The Wi-Fi network disappeared after turning off Wi-Fi control.** Turning
+  off **Wi-Fi control** (Settings > Apps > Special app access) makes Android
+  delete the app's suggested network and its key. Turn Wi-Fi control back on
+  and tap **Check now** (or wait for the daily check): the app reinstalls
+  the network with a new certificate once the current one is confirmed, and
+  Android asks to allow the suggested network again.
 - **Renewals aren't confirmed.** Check the location permission. With the
   app open, turning Wi-Fi off and on confirms within a minute or so
   (or tap **Check now** once it has reconnected).

@@ -96,14 +96,20 @@ class RecordingWifi : WifiInstaller {
     /** Thrown by [checkAllowed], like Wi-Fi control turned off. */
     var notAllowed: WifiInstallException? = null
 
+    /** What [isInstalled] answers; set to false to simulate Android removing the suggestion. */
+    var installed = true
+
     override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
         installFailure?.let { throw it }
         installs += Install(profile, wpa3, identity, privateKey, chain)
+        installed = true
     }
 
     override fun checkAllowed() {
         notAllowed?.let { throw it }
     }
+
+    override fun isInstalled(profile: WifiProfile): Boolean = installed
 }
 
 fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)

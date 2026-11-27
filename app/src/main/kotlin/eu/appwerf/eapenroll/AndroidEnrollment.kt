@@ -186,6 +186,9 @@ class SuggestionInstaller(private val context: Context, private val log: (String
         }
     }
 
+    override fun isInstalled(profile: WifiProfile): Boolean =
+        wifi.networkSuggestions.any { it.ssid == profile.ssid }
+
     override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
         val network = NetworkSettings(
             ssid = profile.ssid,

@@ -65,7 +65,13 @@ class MainActivity : Activity() {
     private lateinit var details: LinearLayout
 
     /** What the screen shows; read on the worker, rendered on the main thread. */
-    private class Snapshot(val state: EnrollmentState?, val deviceKey: String?, val now: Long, val unreadable: Boolean = false)
+    private class Snapshot(
+        val state: EnrollmentState?,
+        val deviceKey: String?,
+        val now: Long,
+        val wifiInstalled: Boolean = true,
+        val unreadable: Boolean = false,
+    )
 
     private var snapshot: Snapshot? = null
 
@@ -187,7 +193,10 @@ class MainActivity : Activity() {
                 val state = enroller.state()
                 if (state != null && state.problem == null) scheduleQuietly { Jobs.scheduleDaily(app) }
                 val key = state?.let { runCatching { deviceKeys.describeWithAttestation(it.deviceAlias) }.getOrNull() }
-                Snapshot(state, key, System.currentTimeMillis())
+                val wifiInstalled = state?.profile?.let { profile ->
+                    runCatching { SuggestionInstaller(app).isInstalled(profile) }.getOrDefault(true)
+                } ?: true
+                Snapshot(state, key, System.currentTimeMillis(), wifiInstalled = wifiInstalled)
             } catch (e: Exception) {
                 AppLog.add("Enrollment state unreadable: ${Errors.describe(e)}")
                 Snapshot(null, null, System.currentTimeMillis(), unreadable = true)
@@ -221,7 +230,7 @@ class MainActivity : Activity() {
         statusActions.visibility = if (state != null && !stopped) View.VISIBLE else View.GONE
         if (state != null) {
             statusHeader.visibility = View.VISIBLE
-            renderStatus(state, snap.now)
+            renderStatus(state, snap.now, snap.wifiInstalled)
             renderDetails(state, snap.deviceKey)
         } else if (snap.unreadable && !busy) {
             statusHeader.visibility = View.VISIBLE
@@ -248,7 +257,7 @@ class MainActivity : Activity() {
 
     private enum class Tone { OK, INFO, WARNING, ERROR }
 
-    private fun renderStatus(state: EnrollmentState, now: Long) {
+    private fun renderStatus(state: EnrollmentState, now: Long, wifiInstalled: Boolean) {
         val attention = Notifier.attentionText(state, now)
         val wifiCert = state.wifiChain?.get(0)
         val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
@@ -265,6 +274,14 @@ class MainActivity : Activity() {
             wifiCert == null -> showStatus(
                 Tone.WARNING, getString(R.string.status_no_wifi_title),
                 listOfNotNull(getString(R.string.status_no_wifi_text), state.lastError).joinToString("\n\n"),
+            )
+            !wifiInstalled -> showStatus(
+                Tone.WARNING, getString(R.string.status_wifi_removed_title),
+                if (state.confirmPending && !state.connectedAfterInstall) {
+                    getString(R.string.status_wifi_removed_unconfirmed_text, quotedSsid(state), dateOf(renewalStart(wifiCert)))
+                } else {
+                    getString(R.string.status_wifi_removed_text, quotedSsid(state))
+                },
             )
             state.confirmPending && state.connectedAfterInstall ->
                 showStatus(Tone.INFO, getString(R.string.status_confirming_title), getString(R.string.status_confirming_text))

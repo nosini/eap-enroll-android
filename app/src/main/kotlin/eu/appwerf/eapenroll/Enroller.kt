@@ -44,6 +44,9 @@ fun interface WifiInstaller {
 
     /** Throws [WifiInstallException] if [install] can't work now, e.g. while the user disallows Wi-Fi control. */
     fun checkAllowed() {}
+
+    /** Whether the app's network suggestion for [profile] is currently installed in Wi-Fi. */
+    fun isInstalled(profile: WifiProfile): Boolean = true
 }
 
 /**
@@ -415,7 +418,14 @@ class Enroller(
                 }
             }
             val wifiChain = state.wifiChain
-            if (renewWifi || wifiNotCurrent || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
+            val profile = state.profile
+            val wifiDue = wifiChain == null || Certs.renewalDue(wifiChain[0], now)
+            val wifiMissing = wifiChain != null && profile != null && !wifi.isInstalled(profile)
+            val wifiReplaced = renewWifi || wifiNotCurrent || wifiDue || (wifiMissing && !state.confirmPending)
+            if (wifiReplaced) {
+                if (wifiMissing && !renewWifi && !wifiNotCurrent && !wifiDue) {
+                    log("Wi-Fi network '${profile!!.ssid}' is not installed; reinstalling")
+                }
                 state = renewWifi(state)
                 gotThrough()
             }
@@ -430,6 +440,16 @@ class Enroller(
                     fail(state, e, null)
                     return Outcome.RETRY
                 }
+            }
+            if (wifiMissing && !wifiReplaced) {
+                // The current certificate is unconfirmed (otherwise it was
+                // reinstalled above): don't request another until it is due,
+                // so repeated removals can't exhaust the server's limit.
+                wifi.checkAllowed()
+                throw WifiInstallException(
+                    "The Wi-Fi network was removed, but not requesting a new certificate while the current one " +
+                        "isn't confirmed yet. It is renewed automatically when due.",
+                )
             }
             store.save(state.copy(problem = null, waitUntil = 0, lastError = null, lastSuccessAt = clock()))
             return Outcome.OK

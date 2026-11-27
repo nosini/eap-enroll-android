@@ -38,6 +38,9 @@
     <string name="status_confirming_text">The phone connected with it; the app is telling the server.</string>
     <string name="status_no_wifi_title">No Wi-Fi certificate yet</string>
     <string name="status_no_wifi_text">Getting the first certificate didn\'t finish. Tap Check now to try again.</string>
+    <string name="status_wifi_removed_title">Wi-Fi network was removed</string>
+    <string name="status_wifi_removed_text">Network %1$s is no longer in Wi-Fi. Tap Check now to add it again with a new certificate, or wait for the daily check.</string>
+    <string name="status_wifi_removed_unconfirmed_text">Network %1$s is no longer in Wi-Fi. The current certificate isn\'t confirmed yet, so the app waits until it is due for renewal (%2$s) before requesting another.</string>
     <string name="status_wait_title">Waiting for the server</string>
     <string name="status_wait_text">The server asked for no requests before %1$s.</string>
     <string name="status_attention_title">Renewal needs attention</string>
@@ -148,7 +151,7 @@
     <string name="remove_suggestions">Remove networks</string>
     <string name="remove_networks_title">Remove networks?</string>
     <string name="remove_networks_text">This removes the Wi-Fi networks this app added as suggestions.</string>
-    <string name="remove_networks_enrolled_text">An automatic enrollment is set up: this removes its Wi-Fi network too. The app adds it again with the next renewal.</string>
+    <string name="remove_networks_enrolled_text">An automatic enrollment is set up: this removes its Wi-Fi network too. The app adds it again on the next check.</string>
     <string name="manual_cleanup">Clean up</string>
     <string name="manual_cleanup_text">Once the phone has connected, delete the app\'s copy of the key. Wi-Fi keeps its own.</string>
     <string name="delete_key">Delete key and certificate</string>

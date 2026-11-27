@@ -630,6 +630,71 @@ class RefusalTest {
         assertEquals(1, wifi.installs.size)
     }
 
+    /** Enrolled with neither credential due, a stored profile, and a server ready to issue Wi-Fi certificates. */
+    private fun wifiNotDue(confirmPending: Boolean = false) {
+        pendingConfirmation(wifiNotAfter = now + 50 * day)
+        store.save(store.load()!!.copy(
+            profile = radiusProfile,
+            confirmPending = confirmPending,
+            connectedAfterInstall = false,
+        ))
+        server.answer = {
+            when (it.path) {
+                "wifi/profile" -> FakeEstServer.profile(radiusProfile)
+                "wifi/simpleenroll" -> FakeEstServer.issue(it, wifiCa, "alice")
+                else -> FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+    }
+
+    @Test
+    fun missingSuggestionReinstallsOnceWhenConfirmed() {
+        wifiNotDue(confirmPending = false)
+        wifi.installed = false
+
+        assertEquals(Enroller.Outcome.OK, enroller.maintain())
+        assertEquals(listOf("wifi/profile", "wifi/simpleenroll"), server.requests.map { it.path })
+        assertEquals(1, wifi.installs.size)
+        assertTrue(wifi.installed)
+        assertTrue(store.load()!!.confirmPending)
+
+        // Removed again before the new certificate is confirmed: don't request another.
+        wifi.installed = false
+        server.requests.clear()
+        assertEquals(Enroller.Outcome.LATER, enroller.maintain())
+        assertTrue(server.requests.isEmpty())
+        assertEquals(1, wifi.installs.size)
+        assertTrue(store.load()!!.lastError!!.contains("isn't confirmed"))
+    }
+
+    @Test
+    fun missingSuggestionWithUnconfirmedCertificateRequestsNothing() {
+        wifiNotDue(confirmPending = true)
+        wifi.installed = false
+
+        assertEquals(Enroller.Outcome.LATER, enroller.maintain())
+        assertTrue(server.requests.isEmpty())
+        assertTrue(wifi.installs.isEmpty())
+        assertTrue(store.load()!!.lastError!!.contains("isn't confirmed"))
+    }
+
+    @Test
+    fun missingSuggestionWithWifiControlOffRequestsNothing() {
+        wifiNotDue(confirmPending = false)
+        wifi.installed = false
+        wifi.notAllowed = WifiInstallException("The app may not change Wi-Fi networks.")
+
+        assertEquals(Enroller.Outcome.LATER, enroller.maintain())
+        assertTrue(server.requests.isEmpty())
+        assertTrue(wifi.installs.isEmpty())
+        assertTrue(store.load()!!.lastError!!.contains("may not change Wi-Fi"))
+
+        wifi.notAllowed = null
+        assertEquals(Enroller.Outcome.OK, enroller.maintain())
+        assertEquals(listOf("wifi/profile", "wifi/simpleenroll"), server.requests.map { it.path })
+        assertEquals(1, wifi.installs.size)
+    }
+
     @Test
     fun failedConfirmationIsRetried() {
         pendingConfirmation(wifiNotAfter = now + 50 * day)

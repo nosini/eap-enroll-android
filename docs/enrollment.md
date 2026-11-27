@@ -182,6 +182,14 @@ restarts, needs a network) does whatever is due:
   suggestions while the user has turned off the app's "Wi-Fi control"
   (Settings > Apps > Special app access) and, from Android 13, while an
   administrator forbids adding networks.
+- On each check, the app also checks whether its suggestion for the
+  enrolled network is still in Wi-Fi. Turning off Wi-Fi control makes
+  Android delete the suggestion (and its key, which only ever lived in
+  Wi-Fi). If it is missing and adding networks is allowed, the app
+  requests and installs a new Wi-Fi certificate, but only while the
+  current certificate is confirmed (the same rule as "Renew certificate"),
+  so repeated removals can't pile up unconfirmed certificates on the
+  server; otherwise it waits until the certificate is due for renewal.
 - "Renew certificate" refuses while the current certificate
   isn't confirmed yet (and isn't due). Unconfirmed certificates stay valid,
   and the server allows only a few valid ones per phone (5 on

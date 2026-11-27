@@ -536,7 +536,7 @@ class MainActivity : Activity() {
                 if (after != null && after != before) screen.markSetupUsed()
                 // A new enrollment starts with no dismissed tasks: one
                 // dismissed for the previous server may matter now.
-                if (after != null && before == null) prefs.edit().remove(PREF_DISMISSED).apply()
+                if (after != null && after != before) prefs.edit().remove(PREF_DISMISSED).apply()
             }
         }
     }

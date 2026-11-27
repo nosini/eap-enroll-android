@@ -9,8 +9,9 @@ What it covers: setup with a one-time code, the first Wi-Fi certificate
 and profile, confirming a new certificate (older ones revoked in OpenBao),
 device credential renewal (old credential revoked) with the attestation
 challenges the app uses, a replaced credential used again (device
-disabled), too many requests (429, the app waits), single-use codes, a
-wrong CA fingerprint in the setup link, and a disabled device or user. The
+disabled), too many certificates (429 `too_many_certificates`, the app
+waits), single-use codes, a wrong CA fingerprint in the setup link, and a
+disabled device or user. The
 Android parts (Keystore key and its attestation, network suggestion,
 broadcast, background job) are replaced by in-memory fakes; they need the
 phone. Key attestation is off in this test: only a real phone can make an

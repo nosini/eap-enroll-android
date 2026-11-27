@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -25,6 +26,7 @@ import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import java.math.BigInteger
 import java.text.DateFormat
 import java.util.Date
@@ -70,6 +72,9 @@ class MainActivity : Activity() {
     /** The WPA3 switch has been set up (or restored with the activity); it isn't reset after that. */
     private var setupWpa3Shown = false
     private var approval: Int? = null
+
+    /** The request code of a permission request the user tapped for, or null for one the app made. */
+    private var requestedByUser: Int? = null
     private val screen = MainScreen
     private val onWorkFinished: () -> Unit = { refresh() }
 
@@ -352,7 +357,7 @@ class MainActivity : Activity() {
         }
         if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
             task(TASK_LOCATION, R.string.task_location_title, R.string.task_location_text, R.string.task_location_action) {
-                requestPermissions(
+                requestForTask(
                     arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
                     REQUEST_LOCATION,
                 )
@@ -360,19 +365,25 @@ class MainActivity : Activity() {
         } else if (!granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
             // Android shows the "Allow all the time" choice in Settings.
             task(TASK_BACKGROUND, R.string.task_background_title, R.string.task_background_text, R.string.task_background_action) {
-                requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQUEST_LOCATION)
+                requestForTask(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQUEST_LOCATION)
             }
         }
         if (!localNetworkGranted()) {
             task(TASK_LOCAL_NETWORK, R.string.task_local_network_title, R.string.task_local_network_text, R.string.task_local_network_action) {
-                requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
+                requestForTask(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
             task(TASK_NOTIFICATIONS, R.string.task_notifications_title, R.string.task_notifications_text, R.string.task_notifications_action) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+                requestForTask(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
             }
         }
+    }
+
+    /** A permission request the user tapped for, unlike setup's own local network request. */
+    private fun requestForTask(permissions: Array<String>, requestCode: Int) {
+        requestedByUser = requestCode
+        requestPermissions(permissions, requestCode)
     }
 
     private fun task(id: String, title: Int, text: Int, action: Int, dismissable: Boolean = true, onAction: () -> Unit) {
@@ -499,6 +510,8 @@ class MainActivity : Activity() {
         if (!localNetworkGranted()) {
             screen.pendingSetup = link
             updateButtons()
+            // The app's own request: a denial doesn't open Settings.
+            requestedByUser = null
             requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
             return
         }
@@ -633,10 +646,28 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val byUser = requestCode == requestedByUser
+        requestedByUser = null
         AppLog.add("Permissions: " + permissions.indices.joinToString {
             "${permissions[it].substringAfterLast('.')}=" +
                 if (grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
         })
+        // Android stops asking after a denial the user meant for good, so
+        // the task's button would do nothing. Once it won't show the dialog
+        // any more, send the user to the app's settings instead. Background
+        // location is left out: since Android 11 its request already opens
+        // Settings, so there is nothing more to open.
+        val denied = permissions.indices.filter {
+            permissions[it] != Manifest.permission.ACCESS_BACKGROUND_LOCATION &&
+                grantResults.getOrNull(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (byUser && denied.any { !shouldShowRequestPermissionRationale(permissions[it]) }) {
+            AppLog.add("Android won't ask again; opening the app's settings")
+            Toast.makeText(this, R.string.permission_settings_hint, Toast.LENGTH_LONG).show()
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)),
+            )
+        }
         if (requestCode == REQUEST_LOCAL_NETWORK) {
             val link = screen.pendingSetup
             screen.pendingSetup = null

@@ -101,6 +101,9 @@ phone.
 | Notifications (optional) | Warnings about failing renewals. |
 | Run at startup | Keeping the daily check scheduled after a restart. |
 
+If Android won't ask for one of these again, because it was denied for
+good, tapping its card on the main screen opens the app's settings.
+
 ## Manual setup
 
 Without an enrollment server, open **Manual setup** (on the setup screen
@@ -127,7 +130,8 @@ Manual certificates aren't renewed; repeat the steps before they expire.
   or exclude EAP Enroll from the VPN.
 - **Setup or renewal times out.** On Android 17, an enrollment server on
   the local network needs the **Nearby devices** permission. Allow it in
-  the app's settings, or tap **Allow nearby devices** on the main screen.
+  the app's settings; tapping **Allow nearby devices** on the main screen
+  opens them if Android won't ask any more.
 - **The camera shows the link but doesn't open the app.** Some camera
   apps, including GrapheneOS Camera, don't open `eapenroll://` links. Paste
   the link instead.

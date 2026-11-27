@@ -76,6 +76,7 @@
     <string name="task_notifications_title">Get renewal warnings</string>
     <string name="task_notifications_text">The app warns when a certificate is close to expiring and renewing it failed.</string>
     <string name="task_notifications_action">Allow notifications</string>
+    <string name="permission_settings_hint">Not allowed. Allow it in the app\'s settings.</string>
 
     <!-- Details -->
     <string name="details">Details</string>

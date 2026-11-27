@@ -90,6 +90,54 @@ class LocalStateTest {
         assertFalse(EnrollmentState.parse(stored.toString()).wpa3)
     }
 
+    /** The server issues a device credential, the profile and a Wi-Fi certificate. */
+    private fun issuingEverything() {
+        val profile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert))
+        server.answer = {
+            when (it.path) {
+                "device/simpleenroll" -> FakeEstServer.issue(it, deviceCa, "alice", notAfter = Date(now + 365 * day))
+                "wifi/profile" -> FakeEstServer.profile(profile)
+                "wifi/simpleenroll" -> FakeEstServer.issue(it, wifiCa, "alice", notAfter = Date(now + 60 * day))
+                else -> FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+    }
+
+    @Test
+    fun setupOverAnExpiredEnrollment() {
+        val old = enrolled()
+        val expired = TestPki.leaf(deviceCa, "alice", keys.keyPair(old.deviceAlias), Date(now - 400 * day), Date(now - day))
+        store.save(old.copy(deviceChain = listOf(expired, deviceCa.cert), problem = Problem.NEEDS_SETUP, lastError = "expired"))
+        issuingEverything()
+        val wifi = RecordingWifi()
+        assertEquals(Enroller.Outcome.OK, Enroller(keys, wifi, store, clock = { now }).setup(link))
+
+        assertEquals(listOf("device/simpleenroll", "wifi/profile", "wifi/simpleenroll"), server.requests.map { it.path })
+        // No credential with the code (the server would refuse the expired
+        // one in the handshake), then only the new one.
+        val state = store.load()!!
+        assertNull(server.requests[0].clientCertificate)
+        server.requests.drop(1).forEach { assertEquals(state.deviceChain[0], it.clientCertificate) }
+        assertEquals(keys.created.last().public, state.deviceChain[0].publicKey)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+        assertNull(state.problem)
+        assertNull(state.lastError)
+        assertEquals(wifi.installs.single().chain[0], state.wifiChain!![0])
+        assertTrue(state.confirmPending)
+    }
+
+    @Test
+    fun setupWithAnUnattestedKey() {
+        keys.attest = false
+        issuingEverything()
+        assertEquals(Enroller.Outcome.OK, enroller().setup(link))
+        val request = server.requests.first()
+        assertEquals("device/simpleenroll", request.path)
+        assertEquals("Bearer ${link.code}", request.headers["authorization"])
+        assertNull(request.headers["key-attestation"])
+        assertNull(store.load()!!.problem)
+    }
+
     @Test
     fun setupReplacesThePreviousEnrollmentsKeys() {
         val old = enrolled()

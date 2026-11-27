@@ -11,6 +11,7 @@ import java.security.KeyPair
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.PublicKey
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.security.spec.X509EncodedKeySpec
@@ -25,7 +26,8 @@ import javax.net.ssl.X509TrustManager
 /**
  * Device keys in memory. Keys made with a challenge get a stand-in
  * attestation chain (a certificate for the key, then a fake root); servers
- * that don't require attestation ignore it.
+ * that don't require attestation ignore it. Without [attest], keys have no
+ * attestation, like the Keystore's fallback when attesting fails.
  */
 class MemoryKeys : DeviceKeys {
     val keys = HashMap<String, KeyPair>()
@@ -40,6 +42,8 @@ class MemoryKeys : DeviceKeys {
     /** Thrown by [create] instead of making a key, like a Keystore that fails. */
     var createFailure: Exception? = null
 
+    var attest = true
+
     override fun create(challenge: ByteArray?): String {
         createFailure?.let { throw it }
         val alias = "device-${next++}"
@@ -47,7 +51,7 @@ class MemoryKeys : DeviceKeys {
         keys[alias] = keyPair
         created += keyPair
         challenges += challenge
-        if (challenge != null) {
+        if (challenge != null && attest) {
             attestations[alias] = listOf(
                 TestPki.leaf(attestationRoot, "Android Keystore Key", keyPair).encoded,
                 attestationRoot.cert.encoded,
@@ -134,13 +138,23 @@ class FakeEstServer(hostName: String = "localhost") : AutoCloseable {
             /** Certificates after the issuer's, e.g. its CA. */
             moreChain: List<X509Certificate> = emptyList(),
         ): Answer {
+            val leaf = TestPki.leaf(issuer, name, KeyPair(csrKey(request), null), notBefore, notAfter)
+            return certificates(listOf(leaf, issuer.cert) + moreChain)
+        }
+
+        /** The public key in the request's CSR. */
+        fun csrKey(request: Request): PublicKey {
             val csr = Base64.getMimeDecoder().decode(request.body)
             val info = Der.parse(csr).children()[0]
-            val publicKey = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(info.children()[2].encoded()))
-            val leaf = TestPki.leaf(issuer, name, KeyPair(publicKey, null), notBefore, notAfter)
-            val body = Base64.getEncoder().encodeToString(TestPki.certsOnly(listOf(leaf, issuer.cert) + moreChain))
-            return Answer(200, body, mapOf("Content-Type" to "application/pkcs7-mime; smime-type=certs-only"))
+            return KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(info.children()[2].encoded()))
         }
+
+        /** [chain] as a certs-only answer. */
+        fun certificates(chain: List<X509Certificate>) = Answer(
+            200,
+            Base64.getEncoder().encodeToString(TestPki.certsOnly(chain)),
+            mapOf("Content-Type" to "application/pkcs7-mime; smime-type=certs-only"),
+        )
 
         /** The answer to `wifi/profile`. */
         fun profile(profile: WifiProfile) =

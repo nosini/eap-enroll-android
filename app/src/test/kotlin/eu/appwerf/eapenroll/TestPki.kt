@@ -29,8 +29,7 @@ object TestPki {
         return Issuer(certificate(name, keys, name, keys, ca = true, notBefore = notBefore, notAfter = notAfter), keys)
     }
 
-    fun intermediate(parent: Issuer, name: String): Issuer {
-        val keys = keyPair()
+    fun intermediate(parent: Issuer, name: String, keys: KeyPair = keyPair()): Issuer {
         return Issuer(certificate(name, keys, parent.cert.subjectCn(), parent.keyPair, ca = true), keys)
     }
 

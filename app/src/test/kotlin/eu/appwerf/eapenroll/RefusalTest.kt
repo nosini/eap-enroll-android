@@ -310,6 +310,29 @@ class RefusalTest {
     }
 
     @Test
+    fun renewalAfterASupersededConnection() {
+        server.answer = {
+            when {
+                server.requests.size == 1 -> FakeEstServer.Answer(401, "replaced\n", mapOf("Enroll-Error" to "credential_superseded"))
+                it.path == "device/simplereenroll" -> FakeEstServer.issue(it, server.deviceCa, "alice", notAfter = Date(now + 365 * day))
+                it.path == "wifi/profile" -> FakeEstServer.profile(radiusProfile)
+                else -> FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+        assertEquals(Enroller.Outcome.OK, enroller.maintain())
+        // The renewal again, then the new credential's first request retires the old one.
+        assertEquals(listOf("device/simplereenroll", "device/simplereenroll", "wifi/profile"), server.requests.map { it.path })
+        val state = store.load()!!
+        assertEquals(keys.created.last().public, state.deviceChain[0].publicKey)
+        assertEquals(listOf(credential, credential, state.deviceChain[0]), server.requests.map { it.clientCertificate })
+        assertNull(state.previousDeviceAlias)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+        assertNull(state.problem)
+        assertNull(state.lastError)
+        assertTrue(wifi.installs.isEmpty())
+    }
+
+    @Test
     fun supersededAgainIsRetriedLater() {
         answer(401, "Enroll-Error" to "credential_superseded")
         assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
@@ -442,6 +465,17 @@ class RefusalTest {
             "expired" to { FakeEstServer.issue(it, wifiCa, "alice", Date(now - 2 * day), Date(now - 1000)) },
             "no valid period" to { FakeEstServer.issue(it, wifiCa, "alice", Date(now), Date(now - day)) },
             "bad upper link" to { FakeEstServer.issue(it, intermediate, "alice", moreChain = listOf(impostor.cert)) },
+            "another key" to { FakeEstServer.certificates(listOf(TestPki.leaf(wifiCa, "alice"), wifiCa.cert)) },
+            "CA certificate" to {
+                val ca = TestPki.intermediate(wifiCa, "alice", java.security.KeyPair(FakeEstServer.csrKey(it), null))
+                FakeEstServer.certificates(listOf(ca.cert, wifiCa.cert))
+            },
+            "not a CA in the chain" to {
+                val keys = TestPki.keyPair()
+                val notCa = TestPki.Issuer(TestPki.leaf(wifiCa, "Not a CA", keys), keys)
+                FakeEstServer.issue(it, notCa, "alice", moreChain = listOf(wifiCa.cert))
+            },
+            "no common name" to { FakeEstServer.issue(it, wifiCa, "") },
         )) {
             wifiDue()
             val profile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert))

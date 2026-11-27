@@ -135,6 +135,7 @@
     <string name="save">Save</string>
     <string name="no_key">No key yet.</string>
     <string name="key_stored">Key stored (encrypted). Public key SHA-256 %1$s…</string>
+    <string name="key_unreadable">Key file unreadable; delete it and generate a new key.</string>
     <string name="manual_certificate">Signed certificate</string>
     <string name="import_file">Import file</string>
     <string name="paste">Paste</string>

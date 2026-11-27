@@ -105,8 +105,12 @@ class KeyVault(context: Context) {
     private fun stored(): StoredKey? = when {
         file.exists() -> StoredKey.decode(file.readBytes())
         legacyEncryptedKeyFile.exists() && legacyPublicKeyFile.exists() -> {
+            // An empty or truncated legacy file makes stored() fail like a
+            // corrupt wifi-key, so the screen can offer to delete it.
             val blob = legacyEncryptedKeyFile.readBytes()
-            val ivLength = blob[0].toInt()
+            require(blob.isNotEmpty()) { "Stored key file is truncated" }
+            val ivLength = blob[0].toInt() and 0xff
+            require(ivLength in 1 until blob.size) { "Stored key file is truncated" }
             StoredKey(
                 LEGACY_WRAP_ALIAS,
                 blob.copyOfRange(1, 1 + ivLength),

@@ -157,10 +157,13 @@ class ManualSetupActivity : Activity() {
         } else {
             getString(R.string.no_ca)
         }
-        keySummary.text = if (vault.hasKey()) {
-            getString(R.string.key_stored, fingerprint(vault.publicKeyEncoded()!!))
-        } else {
-            getString(R.string.no_key)
+        // A stored key file that can't be read has no public key: say so
+        // instead of failing here, so the user can still delete it.
+        val publicKey = vault.publicKeyEncoded()
+        keySummary.text = when {
+            publicKey != null -> getString(R.string.key_stored, fingerprint(publicKey))
+            vault.hasKey() -> getString(R.string.key_unreadable)
+            else -> getString(R.string.no_key)
         }
         certSummary.text = if (chainFile.exists()) {
             runCatching { Pem.certificates(chainFile.readBytes()).joinToString("\n\n") { describe(it) } }

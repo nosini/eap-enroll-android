@@ -521,6 +521,9 @@ class MainActivity : Activity() {
                 // leaves the link in the field to be tried again.
                 val after = runCatching { enroller.state()?.deviceAlias }.getOrNull()
                 if (after != null && after != before) screen.markSetupUsed()
+                // A new enrollment starts with no dismissed tasks: one
+                // dismissed for the previous server may matter now.
+                if (after != null && before == null) prefs.edit().remove(PREF_DISMISSED).apply()
             }
         }
     }
@@ -611,6 +614,7 @@ class MainActivity : Activity() {
         val app = applicationContext
         run(Action.REMOVE) {
             enroller.forget()
+            prefs.edit().remove(PREF_DISMISSED).apply()
             Jobs.cancelAll(app)
             val status = wifi.removeNetworkSuggestions(emptyList())
             AppLog.add("Enrollment removed; suggestions removed: ${WifiSetup.statusName(status)}")

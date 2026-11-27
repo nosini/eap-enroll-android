@@ -42,7 +42,9 @@ key. The tag must match `versionName` and be reachable from `main`:
 
 Re-running the workflow for a tag whose release is already published
 fails rather than replacing the APK; it only finishes a draft that an
-earlier run left behind. For a fixed build, release a new version.
+earlier run left behind. For a fixed build, release a new version. A
+release is created only when GitHub says there is none; if looking it up
+fails for another reason, the step fails with that error.
 
 Signing needs two repository secrets:
 

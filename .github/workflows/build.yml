@@ -191,13 +191,17 @@ jobs:
           # publishes it, so a run that failed on the way can leave a
           # draft; a re-run finishes that one. A published release keeps
           # its APK: a re-run must not replace a file already installed.
-          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+          error="$RUNNER_TEMP/gh-release-view.err"
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>"$error"); then
             if [ "$draft" != "true" ]; then
               echo "::error::release $TAG is already published; its APK stays as it is"
               exit 1
             fi
             gh release upload "$TAG" "$file" --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
-          else
+          elif grep -q 'release not found' "$error"; then
             gh release create "$TAG" "$file" --verify-tag --title "$TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
+          else
+            echo "::error::could not look up release $TAG: $(cat "$error")"
+            exit 1
           fi

@@ -27,9 +27,35 @@ import java.util.concurrent.TimeUnit
  * asked for is over.
  */
 object Jobs {
-    private const val DAILY = 1
-    private const val SOON = 2
-    private const val AFTER_WAIT = 3
+    const val DAILY = 1
+    const val SOON = 2
+    const val AFTER_WAIT = 3
+
+    enum class FollowUp {
+        NONE,
+
+        /** The one-off run with backoff. */
+        SOON,
+
+        /** The one-off run once the server's wait is over. */
+        AFTER_WAIT,
+
+        /** Nothing until the user acts: every job is cancelled. */
+        CANCEL,
+    }
+
+    /**
+     * What a check that ended with [outcome] needs next. [jobId] is the job
+     * that ran it, or null when the user started it. A failed SOON run
+     * retries through its own backoff, and a failed daily run on the next
+     * day.
+     */
+    fun followUpFor(outcome: Enroller.Outcome, jobId: Int?): FollowUp = when (outcome) {
+        Enroller.Outcome.STOPPED, Enroller.Outcome.NOT_ENROLLED -> FollowUp.CANCEL
+        Enroller.Outcome.WAIT -> FollowUp.AFTER_WAIT
+        Enroller.Outcome.RETRY -> if (jobId == null || jobId == AFTER_WAIT) FollowUp.SOON else FollowUp.NONE
+        Enroller.Outcome.OK, Enroller.Outcome.LATER -> FollowUp.NONE
+    }
 
     fun scheduleDaily(context: Context) {
         val scheduler = context.getSystemService(JobScheduler::class.java)
@@ -73,43 +99,42 @@ object Jobs {
         context.getSystemService(JobScheduler::class.java).schedule(job)
     }
 
-    /** What a check started by the user needs next: a retry soon, or a run after the server's wait. */
-    fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?) {
-        when (outcome) {
-            Enroller.Outcome.RETRY -> runSoon(context)
-            Enroller.Outcome.WAIT -> state?.let { runAt(context, it.waitUntil) }
-            else -> {}
+    /** Schedules what a check needs next ([followUpFor]); [state] is the state after it. */
+    fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?, jobId: Int? = null) {
+        when (followUpFor(outcome, jobId)) {
+            FollowUp.NONE -> {}
+            FollowUp.SOON -> runSoon(context)
+            FollowUp.AFTER_WAIT -> state?.let { runAt(context, it.waitUntil) }
+            FollowUp.CANCEL -> cancelAll(context)
         }
     }
 
     fun cancelAll(context: Context) {
         context.getSystemService(JobScheduler::class.java).cancelAll()
     }
-
-    /** Whether [params] is the one-off run, which retries with backoff. */
-    fun isSoon(params: JobParameters) = params.jobId == SOON
 }
 
 class RenewJobService : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         Thread {
             var outcome = Enroller.Outcome.RETRY
+            var state: EnrollmentState? = null
             try {
                 val enroller = Enrollment.enroller(this)
                 outcome = enroller.maintain()
                 Log.i(Enrollment.TAG, "Background check: $outcome")
-                if (outcome == Enroller.Outcome.WAIT) {
-                    try {
-                        enroller.state()?.let { Jobs.runAt(this, it.waitUntil) }
-                    } catch (e: Exception) {
-                        Log.w(Enrollment.TAG, "Scheduling the check after the wait failed", e)
-                    }
-                }
+                state = runCatching { enroller.state() }.getOrNull()
                 Notifier.update(this)
             } catch (e: Exception) {
                 Log.w(Enrollment.TAG, "Background renewal failed", e)
             } finally {
-                jobFinished(params, outcome == Enroller.Outcome.RETRY && Jobs.isSoon(params))
+                jobFinished(params, outcome == Enroller.Outcome.RETRY && params.jobId == Jobs.SOON)
+            }
+            // After jobFinished(): cancelling all jobs cancels this one too.
+            try {
+                Jobs.followUp(this, outcome, state, params.jobId)
+            } catch (e: Exception) {
+                Log.w(Enrollment.TAG, "Scheduling the next check failed", e)
             }
         }.start()
         return true
@@ -138,7 +163,9 @@ class ConnectionReceiver : BroadcastReceiver() {
         Thread {
             try {
                 val enroller = Enrollment.enroller(context)
-                val ssid = enroller.state()?.profile?.ssid
+                val state = enroller.state()
+                // A stopped enrollment confirms nothing; the confirmation waits for the user.
+                val ssid = state?.profile?.ssid?.takeIf { state.problem == null }
                 Log.i(Enrollment.TAG, "Post-connection broadcast for '${suggestion?.ssid}'")
                 // getSsid() returns the plain SSID; tolerate quotes all the same.
                 val connected = suggestion?.ssid?.removeSurrounding("\"")
@@ -194,6 +221,7 @@ object Notifier {
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .build()
         // Without the notification permission (Android 13+) this is dropped silently.
         manager.notify(ID, notification)

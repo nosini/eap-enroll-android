@@ -164,7 +164,12 @@ restarts, needs a network) does whatever is due:
   deletes device keys left behind by a setup or renewal that was
   interrupted before its state was stored.
 - A failed request is retried by the next daily run, and a run started
-  from the app or after a connection is retried with backoff.
+  from the app, after a connection or after the server's wait is retried
+  with backoff.
+- When the app stops (a new setup link is needed, or the device or the
+  account is disabled), it cancels its background jobs, so neither checks
+  nor the notification come back every day. A check by the user that gets
+  through, or a new setup, schedules them again.
 - A Wi-Fi certificate that Android refuses to install is left to the
   daily check, since the server has issued it and requesting another soon
   would most likely only add another unconfirmed certificate. Before

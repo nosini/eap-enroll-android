@@ -513,7 +513,7 @@ class MainActivity : Activity() {
             val before = runCatching { enroller.state()?.deviceAlias }.getOrNull()
             try {
                 val outcome = enroller.setup(link, wpa3)
-                scheduleQuietly { Jobs.scheduleDaily(app) }
+                if (outcome != Enroller.Outcome.STOPPED) scheduleQuietly { Jobs.scheduleDaily(app) }
                 Result.Of(outcome)
             } finally {
                 // A new device credential was stored: the link is used up,

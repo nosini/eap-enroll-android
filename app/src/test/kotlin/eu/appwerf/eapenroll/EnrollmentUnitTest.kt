@@ -42,6 +42,17 @@ class SetupUriTest {
     }
 
     @Test
+    fun malformedLinkDoesNotKeepTheCodeInTheCause() {
+        // A space isn't allowed in a URI; URISyntaxException would quote
+        // the whole link, code included.
+        val e = assertThrows(IllegalArgumentException::class.java) {
+            SetupUri.parse("eapenroll://setup?v=1&code=$code&url=https://enroll.example.org/a b")
+        }
+        assertNull(e.cause)
+        assertFalse(e.message!!.contains(code))
+    }
+
+    @Test
     fun rejectsBadLinks() {
         val good = "ca=$ca&code=$code&url=https://enroll.example.org&v=1"
         for (bad in listOf(

@@ -27,7 +27,9 @@ class SetupUri private constructor(
             val uri = try {
                 URI(text.trim())
             } catch (e: URISyntaxException) {
-                throw IllegalArgumentException("Not a setup link", e)
+                // Without the cause: its message quotes the whole link,
+                // including the one-time code.
+                throw IllegalArgumentException("Not a setup link")
             }
             require(uri.scheme.equals("eapenroll", ignoreCase = true) &&
                 uri.rawAuthority.equals("setup", ignoreCase = true) &&

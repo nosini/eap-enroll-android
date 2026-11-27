@@ -56,14 +56,20 @@ object Jobs {
 
     /**
      * What a check that ended with [outcome] needs next. [jobId] is the job
-     * that ran it, or null when the user started it. A failed SOON run
-     * retries through its own backoff, and a failed daily run on the next
-     * day.
+     * that ran it, or null when the user started it, and [problem] the
+     * state's problem after it. A failed SOON run retries through its own
+     * backoff, and a failed daily run on the next day. A disabled account
+     * is not scheduled for: the background checks stop, so a SOON or
+     * AFTER_WAIT run would do nothing until the user asks again.
      */
-    fun followUpFor(outcome: Enroller.Outcome, jobId: Int?): FollowUp = when (outcome) {
+    fun followUpFor(outcome: Enroller.Outcome, jobId: Int?, problem: Problem? = null): FollowUp = when (outcome) {
         Enroller.Outcome.STOPPED, Enroller.Outcome.NOT_ENROLLED -> FollowUp.CANCEL
-        Enroller.Outcome.WAIT -> FollowUp.AFTER_WAIT
-        Enroller.Outcome.RETRY -> if (jobId == null || jobId == AFTER_WAIT) FollowUp.SOON else FollowUp.NONE
+        Enroller.Outcome.WAIT -> if (problem == Problem.USER_DISABLED) FollowUp.NONE else FollowUp.AFTER_WAIT
+        Enroller.Outcome.RETRY -> when {
+            problem == Problem.USER_DISABLED -> FollowUp.NONE
+            jobId == null || jobId == AFTER_WAIT -> FollowUp.SOON
+            else -> FollowUp.NONE
+        }
         Enroller.Outcome.OK, Enroller.Outcome.LATER -> FollowUp.NONE
     }
 
@@ -131,7 +137,7 @@ object Jobs {
 
     /** Schedules what a check needs next ([followUpFor]); [state] is the state after it. */
     fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?, jobId: Int? = null) {
-        when (followUpFor(outcome, jobId)) {
+        when (followUpFor(outcome, jobId, state?.problem)) {
             FollowUp.NONE -> {}
             FollowUp.SOON -> runSoon(context)
             FollowUp.AFTER_WAIT -> state?.let { runAt(context, it.waitUntil) }

@@ -57,6 +57,7 @@
     <string name="result_up_to_date">Everything is up to date.</string>
     <string name="result_retry">The check failed; the app tries again soon.</string>
     <string name="result_later">That didn\'t work this time; the daily check tries again.</string>
+    <string name="result_user_disabled_try_again">The account may still be disabled; the check didn\'t get through to the server. Tap Check now to try again.</string>
     <string name="result_wait">The server asked to wait until %1$s.</string>
     <string name="result_failed">Failed: %1$s</string>
 

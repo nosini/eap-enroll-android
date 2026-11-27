@@ -293,6 +293,60 @@ class RefusalTest {
         assertEquals(Enroller.Outcome.OK, enroller.maintain())
     }
 
+    /** A disabled account whose previous device credential still has to be retired, with nothing due. */
+    private fun userDisabledWithPreviousCredential() {
+        val state = store.load()!!
+        val current = TestPki.leaf(
+            server.deviceCa, "alice", keys.keyPair(state.deviceAlias),
+            notBefore = Date(now - day), notAfter = Date(now + 365 * day),
+        )
+        store.save(state.copy(
+            deviceChain = listOf(current, server.deviceCa.cert),
+            previousDeviceAlias = keys.create(),
+            confirmPending = false,
+            connectedAfterInstall = false,
+            problem = Problem.USER_DISABLED,
+        ))
+    }
+
+    @Test
+    fun aConfirmationWithoutAProfileProvesTheAccountIsEnabled() {
+        userDisabledWithPreviousCredential()
+        // The profile's 404 comes before authentication and proves nothing;
+        // the server authenticated the confirmation that retires the old
+        // credential, so the account is enabled.
+        server.answer = { if (it.path == "wifi/profile") FakeEstServer.Answer(404) else FakeEstServer.Answer(204) }
+        assertEquals(Enroller.Outcome.OK, enroller.maintain(byUser = true))
+        // The account check's 404, then the retirement's own, then the confirmation.
+        assertEquals(listOf("wifi/profile", "wifi/profile", "wifi/confirm"), server.requests.map { it.path })
+        val state = store.load()!!
+        assertNull(state.problem)
+        assertNull(state.previousDeviceAlias)
+    }
+
+    @Test
+    fun aRenewedCredentialClearsADisabledAccountEvenWhenRetiringFails() {
+        store.save(store.load()!!.copy(problem = Problem.USER_DISABLED))
+        server.answer = {
+            when (it.path) {
+                "wifi/profile" -> FakeEstServer.Answer(404)
+                "device/simplereenroll" -> FakeEstServer.issue(it, server.deviceCa, "alice", notAfter = Date(now + 365 * day))
+                else -> FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+        // The renewal was stored; retiring the old credential then failed
+        // on the confirmation after the profile's 404.
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain(byUser = true))
+        assertEquals(
+            listOf("wifi/profile", "device/simplereenroll", "wifi/profile", "wifi/confirm"),
+            server.requests.map { it.path },
+        )
+        val state = store.load()!!
+        assertNull(state.problem)
+        assertEquals(keys.created.last().public, state.deviceChain[0].publicKey)
+        assertNotNull(state.previousDeviceAlias)
+    }
+
     @Test
     fun disabledDeviceNeedsSetup() {
         for (reason in listOf("device_disabled", "credential_reuse", null)) {

@@ -601,18 +601,30 @@ class MainActivity : Activity() {
         val renewed = state?.wifiChain?.get(0)?.serialNumber.let { it != null && it != before }
         // A device credential renewal can fail after Wi-Fi was renewed all the same.
         val alsoRenewed = if (renewed && action != Action.SETUP) getString(R.string.result_renewed) + "\n\n" else ""
+        // A disabled account isn't retried in the background, so a check
+        // that didn't get through must not promise a retry.
+        val userDisabled = state?.problem == Problem.USER_DISABLED
+        val retryText = getString(
+            if (userDisabled) R.string.result_user_disabled_try_again else R.string.result_retry,
+        )
         return when (outcome) {
             Enroller.Outcome.OK -> when {
                 action == Action.SETUP -> getString(R.string.result_set_up)
                 renewed -> getString(R.string.result_renewed)
                 else -> getString(R.string.result_up_to_date)
             }
-            Enroller.Outcome.RETRY -> alsoRenewed + getString(R.string.result_retry) + error
-            Enroller.Outcome.LATER -> alsoRenewed + getString(R.string.result_later) + error
-            Enroller.Outcome.WAIT -> getString(
-                R.string.result_wait,
-                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(state?.waitUntil ?: 0)),
-            )
+            Enroller.Outcome.RETRY -> alsoRenewed + retryText + error
+            Enroller.Outcome.LATER -> alsoRenewed + getString(
+                if (userDisabled) R.string.result_user_disabled_try_again else R.string.result_later,
+            ) + error
+            Enroller.Outcome.WAIT -> if (userDisabled) {
+                retryText + error
+            } else {
+                getString(
+                    R.string.result_wait,
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(state?.waitUntil ?: 0)),
+                )
+            }
             Enroller.Outcome.STOPPED -> Notifier.attentionText(state, System.currentTimeMillis()) ?: outcome.name
             Enroller.Outcome.NOT_ENROLLED -> outcome.name
         }

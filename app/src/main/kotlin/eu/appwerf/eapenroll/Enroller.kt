@@ -365,6 +365,10 @@ class Enroller(
             if (!accountChecked && client(state).wifiProfile() != null) gotThrough()
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
+                // Retired only after an authenticated answer: without a
+                // profile the server authenticated the confirmation, so the
+                // account passed its check.
+                if (state.previousDeviceAlias == null) gotThrough(retired = false)
             }
             // A 400 naming the serial means it isn't a current Wi-Fi
             // certificate of this phone (expired, revoked or unknown to the
@@ -644,9 +648,17 @@ class Enroller(
             // the server retires what the lost one issued. Only a credential
             // from an answer that arrived is ever stored, and it is stored
             // before the old key goes, so a failed save leaves the old
-            // credential usable.
-            state.copy(deviceAlias = alias, deviceChain = chain, previousDeviceAlias = state.deviceAlias)
-                .also(store::save)
+            // credential usable. The server issued a credential, so the
+            // account passed its check: a disabled account is enabled again.
+            val next = state.copy(
+                deviceAlias = alias,
+                deviceChain = chain,
+                previousDeviceAlias = state.deviceAlias,
+                problem = if (state.problem == Problem.USER_DISABLED) null else state.problem,
+            )
+            store.save(next)
+            if (state.problem == Problem.USER_DISABLED) log("The account is enabled again")
+            next
         } catch (e: Exception) {
             // Best effort: a key that stays is deleted by a later check.
             runCatching { keys.delete(alias) }

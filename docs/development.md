@@ -16,10 +16,12 @@ eap-enroll-server.
 Gradle checks every downloaded artifact (plugins included) against the
 SHA-256 in `gradle/verification-metadata.xml`, locally and in CI. After
 changing a dependency or a plugin version, regenerate the file with the
-tasks that resolve them, then review the diff (new components only for
-what you changed):
+tasks that resolve them, from an empty Gradle home as CI starts with (a
+warm cache skips metadata files such as BOMs that a cold one fetches),
+then review the diff (new entries only for what you changed):
 
-    ./gradlew --no-configuration-cache --write-verification-metadata sha256 \
+    GRADLE_USER_HOME=$(mktemp -d) ./gradlew --no-daemon --no-configuration-cache \
+      --write-verification-metadata sha256 \
       help :app:testDebugUnitTest :app:lintDebug :app:lintRelease \
       :app:assembleDebug :app:assembleRelease
 

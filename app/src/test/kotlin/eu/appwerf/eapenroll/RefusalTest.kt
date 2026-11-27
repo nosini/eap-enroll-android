@@ -322,6 +322,59 @@ class RefusalTest {
     }
 
     @Test
+    fun otherConfirmationErrorsDoNotRenewWifi() {
+        pendingConfirmation(wifiNotAfter = now + 50 * day)
+        for (reason in listOf("bad_request", null)) {
+            server.requests.clear()
+            if (reason == null) answer(400) else answer(400, "Enroll-Error" to reason)
+            assertEquals(reason, Enroller.Outcome.RETRY, enroller.maintain())
+            assertEquals(reason, listOf("wifi/confirm"), server.requests.map { it.path })
+            val state = store.load()!!
+            assertTrue(reason, state.confirmPending && state.connectedAfterInstall)
+        }
+    }
+
+    /** A device credential that isn't due and a Wi-Fi certificate that is; the server issues a new one. */
+    private fun wifiDue() {
+        pendingConfirmation(wifiNotAfter = now + 5 * day)
+        store.save(store.load()!!.copy(confirmPending = false, connectedAfterInstall = false))
+        val profile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert))
+        server.answer = {
+            when (it.path) {
+                "wifi/profile" -> FakeEstServer.profile(profile)
+                "wifi/simpleenroll" -> FakeEstServer.issue(it, wifiCa, "alice")
+                else -> FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+    }
+
+    @Test
+    fun failedInstallWaitsForTheDailyCheck() {
+        wifiDue()
+        val before = store.load()!!
+        wifi.installFailure = IllegalStateException("addNetworkSuggestions: ERROR_INTERNAL")
+        assertEquals(Enroller.Outcome.LATER, enroller.maintain(renewWifi = true, byUser = true))
+        assertEquals(listOf("wifi/profile", "wifi/simpleenroll"), server.requests.map { it.path })
+        val state = store.load()!!
+        assertEquals(before.wifiChain, state.wifiChain)
+        assertNull(state.problem)
+        assertTrue(state.lastError!!.contains("ERROR_INTERNAL"))
+    }
+
+    @Test
+    fun disallowedWifiRequestsNoCertificate() {
+        wifiDue()
+        wifi.notAllowed = WifiInstallException("The app may not change Wi-Fi networks.")
+        assertEquals(Enroller.Outcome.LATER, enroller.maintain())
+        assertTrue(server.requests.isEmpty())
+        assertTrue(store.load()!!.lastError!!.contains("may not change Wi-Fi"))
+
+        wifi.notAllowed = null
+        assertEquals(Enroller.Outcome.OK, enroller.maintain())
+        assertEquals(1, wifi.installs.size)
+    }
+
+    @Test
     fun failedConfirmationIsRetried() {
         pendingConfirmation(wifiNotAfter = now + 50 * day)
         answer(503)
@@ -453,6 +506,12 @@ class ManualWifiRenewalTest {
     @Test
     fun refusedWhileUnconfirmed() {
         assertNotNull(Enroller.manualWifiRenewalRefusal(state, now))
+    }
+
+    @Test
+    fun refusedWhileTheUserIsDisabled() {
+        // Retried by the user, so a request goes out once the account is enabled again.
+        assertNotNull(Enroller.manualWifiRenewalRefusal(state.copy(problem = Problem.USER_DISABLED), now))
     }
 
     @Test

@@ -81,8 +81,19 @@ class Install(val profile: WifiProfile, val identity: String, val key: PrivateKe
 class RecordingWifi : WifiInstaller {
     val installs = ArrayList<Install>()
 
+    /** Thrown by [install], like a suggestion Wi-Fi refuses. */
+    var installFailure: Exception? = null
+
+    /** Thrown by [checkAllowed], like Wi-Fi control turned off. */
+    var notAllowed: WifiInstallException? = null
+
     override fun install(profile: WifiProfile, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
+        installFailure?.let { throw it }
         installs += Install(profile, identity, privateKey, chain)
+    }
+
+    override fun checkAllowed() {
+        notAllowed?.let { throw it }
     }
 }
 

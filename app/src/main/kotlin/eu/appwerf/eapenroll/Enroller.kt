@@ -30,10 +30,23 @@ interface DeviceKeys {
     fun delete(alias: String)
 }
 
-/** Hands a Wi-Fi key and certificate to the system, replacing the previous one. */
+/**
+ * Hands a Wi-Fi key and certificate to the system, replacing the previous
+ * one. Throws [WifiInstallException] if the system won't take it.
+ */
 fun interface WifiInstaller {
     fun install(profile: WifiProfile, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>)
+
+    /** Throws [WifiInstallException] if [install] can't work now, e.g. while the user disallows Wi-Fi control. */
+    fun checkAllowed() {}
 }
+
+/**
+ * The phone didn't take a Wi-Fi certificate, or won't now. The server has
+ * issued one when [install] fails, and every new one stays valid until it
+ * expires or a newer one is confirmed, so it isn't retried soon.
+ */
+class WifiInstallException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 interface StateStore {
     fun load(): EnrollmentState?
@@ -266,9 +279,11 @@ class Enroller(
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
             }
-            // A 400 means the serial isn't a current Wi-Fi certificate of
-            // this phone (expired, revoked or unknown to the server):
-            // confirming it can never work, so it is replaced below. The
+            // A 400 naming the serial means it isn't a current Wi-Fi
+            // certificate of this phone (expired, revoked or unknown to the
+            // server): confirming it can never work, so it is replaced
+            // below. Any other error, a 400 without such a reason
+            // included, is retried like other failures. The
             // confirmation stays pending until that succeeds, so a failed
             // renewal leads here again on the next check.
             var wifiNotCurrent = false
@@ -276,7 +291,7 @@ class Enroller(
                 try {
                     state = confirmWifi(state)
                 } catch (e: EstException) {
-                    if (e.status != 400) throw e
+                    if (e.status != 400 || e.reason !in SERIAL_NOT_CURRENT) throw e
                     log("Wi-Fi certificate ${state.wifiChain!![0].serialNumber.toString(16)} can't be confirmed; " +
                         "requesting a new one: ${Errors.describe(e)}")
                     wifiNotCurrent = true
@@ -320,6 +335,11 @@ class Enroller(
         } catch (e: CredentialExpiredException) {
             fail(state, e, Problem.NEEDS_SETUP)
             return Outcome.STOPPED
+        } catch (e: WifiInstallException) {
+            // Requesting another certificate soon would most likely fail
+            // the same way and only add another valid, unconfirmed one.
+            fail(state, e, null)
+            return Outcome.LATER
         } catch (e: IOException) {
             fail(state, e, null)
             return Outcome.RETRY
@@ -505,6 +525,7 @@ class Enroller(
     }
 
     private fun renewWifi(state: EnrollmentState): EnrollmentState {
+        wifi.checkAllowed()
         log("Requesting a Wi-Fi certificate")
         val client = client(state)
         val profile = client.wifiProfile() ?: state.profile
@@ -517,7 +538,13 @@ class Enroller(
         checkIssued(chain, keyPair.public)
         val wifiIdentity = Certs.commonName(chain[0])
         check(wifiIdentity.isNotEmpty()) { "The Wi-Fi certificate has no common name" }
-        wifi.install(profile, wifiIdentity, keyPair.private, Certs.withoutRoots(chain))
+        try {
+            wifi.install(profile, wifiIdentity, keyPair.private, Certs.withoutRoots(chain))
+        } catch (e: WifiInstallException) {
+            throw e
+        } catch (e: Exception) {
+            throw WifiInstallException("Installing the Wi-Fi certificate failed: ${e.message}", e)
+        }
         val next = state.copy(
             profile = profile,
             wifiChain = chain,
@@ -546,6 +573,9 @@ class Enroller(
 
         /** Connections reported this soon after installing a certificate may predate it. */
         const val INSTALL_SETTLE_MS = 10_000L
+
+        /** `wifi/confirm` reasons for a serial that isn't a current Wi-Fi certificate of this phone. */
+        private val SERIAL_NOT_CURRENT = setOf("expired_serial", "revoked_serial", "unknown_serial")
 
         /** Waits for a 429 without (or with a nonsensical) Retry-After. */
         private const val DEFAULT_WAIT_S = 15 * 60L
@@ -581,7 +611,9 @@ class Enroller(
          */
         fun manualWifiRenewalRefusal(state: EnrollmentState?, now: Long): String? {
             val wifi = state?.wifiChain?.get(0) ?: return null
-            if (state.problem != null || !state.confirmPending || state.connectedAfterInstall) return null
+            // Without a working device credential nothing is requested anyway.
+            if (state.problem == Problem.NEEDS_SETUP || state.problem == Problem.DISABLED) return null
+            if (!state.confirmPending || state.connectedAfterInstall) return null
             if (Certs.renewalDue(wifi, now)) return null
             return "Not requesting a new Wi-Fi certificate: the current one isn't confirmed yet. " +
                 "The server keeps unconfirmed certificates valid and allows only a few per phone. " +

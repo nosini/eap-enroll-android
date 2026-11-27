@@ -147,6 +147,13 @@ restarts, needs a network) does whatever is due:
   credential needs a new setup link.
 - A failed request is retried by the next daily run, and a run started
   from the app or after a connection is retried with backoff.
+- A Wi-Fi certificate that Android refuses to install is left to the
+  daily check, since the server has issued it and requesting another soon
+  would most likely only add another unconfirmed certificate. Before
+  requesting one, the app checks that it may add networks: Wi-Fi refuses
+  suggestions while the user has turned off the app's "Wi-Fi control"
+  (Settings > Apps > Special app access) and, from Android 13, while an
+  administrator forbids adding networks.
 - "Renew certificate" refuses while the current certificate
   isn't confirmed yet (and isn't due). Unconfirmed certificates stay valid,
   and the server allows only a few valid ones per phone (5 on
@@ -208,14 +215,15 @@ new certificate was installed:
 A connection through the server proves nothing: the phone may reach it
 over mobile data or a VPN.
 
-If the server answers `400`, the certificate isn't a current Wi-Fi
-certificate of this phone (`expired_serial`, `revoked_serial` or
+If the server answers `400` with one of these reasons, the certificate
+isn't a current Wi-Fi certificate of this phone (`expired_serial`, `revoked_serial` or
 `unknown_serial`), for example because it expired before the phone got to
 confirm it. Confirming it again can't work, so the check doesn't stop
 there: it requests a new Wi-Fi certificate right away, whether or not the
 old one is due. The confirmation stays pending until the new certificate
 is installed, so if that renewal fails, the next check does the same.
-Other errors (network, `5xx`) are retried as before.
+Other errors (network, `5xx`, a `400` without one of these reasons) are
+retried as before.
 
 Known gap: if Wi-Fi fails to import a new key, `addNetworkSuggestions()`
 still returns success and keeps the old suggestion (AOSP logs

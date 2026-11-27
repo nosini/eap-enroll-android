@@ -15,7 +15,6 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
-import android.util.Log
 import java.text.DateFormat
 import java.util.concurrent.TimeUnit
 
@@ -122,11 +121,11 @@ class RenewJobService : JobService() {
             try {
                 val enroller = Enrollment.enroller(this)
                 outcome = enroller.maintain()
-                Log.i(Enrollment.TAG, "Background check: $outcome")
+                AppLog.add("Background check: $outcome")
                 state = runCatching { enroller.state() }.getOrNull()
                 Notifier.update(this)
             } catch (e: Exception) {
-                Log.w(Enrollment.TAG, "Background renewal failed", e)
+                AppLog.add("Background renewal failed: ${Errors.describe(e)}")
             } finally {
                 jobFinished(params, outcome == Enroller.Outcome.RETRY && params.jobId == Jobs.SOON)
             }
@@ -134,7 +133,7 @@ class RenewJobService : JobService() {
             try {
                 Jobs.followUp(this, outcome, state, params.jobId)
             } catch (e: Exception) {
-                Log.w(Enrollment.TAG, "Scheduling the next check failed", e)
+                AppLog.add("Scheduling the next check failed: ${Errors.describe(e)}")
             }
         }.start()
         return true
@@ -166,14 +165,14 @@ class ConnectionReceiver : BroadcastReceiver() {
                 val state = enroller.state()
                 // A stopped enrollment confirms nothing; the confirmation waits for the user.
                 val ssid = state?.profile?.ssid?.takeIf { state.problem == null }
-                Log.i(Enrollment.TAG, "Post-connection broadcast for '${suggestion?.ssid}'")
+                AppLog.add("Post-connection broadcast for '${suggestion?.ssid}'")
                 // getSsid() already unwraps the quotes of a configured SSID,
                 // so an SSID that begins and ends with quotes keeps them.
                 if (ssid != null && suggestion?.ssid == ssid && enroller.connectionObserved(at)) {
                     Jobs.runSoon(context, Jobs.AFTER_CONNECTION_DELAY_MS)
                 }
             } catch (e: Exception) {
-                Log.w(Enrollment.TAG, "Handling the connection broadcast failed", e)
+                AppLog.add("Handling the connection broadcast failed: ${Errors.describe(e)}")
             } finally {
                 pending.finish()
             }
@@ -191,7 +190,7 @@ object Notifier {
         try {
             show(context)
         } catch (e: Exception) {
-            Log.w(Enrollment.TAG, "Updating the notification failed", e)
+            AppLog.add("Updating the notification failed: ${Errors.describe(e)}")
         }
     }
 

@@ -219,8 +219,16 @@ object NetworkPrefs {
 object Enrollment {
     const val TAG = "EapEnroll"
 
-    fun enroller(context: Context, log: (String) -> Unit = {}): Enroller {
+    /**
+     * [log] gets the enroller's messages; by default they also go to the
+     * in-app activity log, which users can send in for bug reports.
+     */
+    fun enroller(
+        context: Context,
+        log: (String) -> Unit = { AppLog.add(it, toLogcat = false) },
+    ): Enroller {
         val app = context.applicationContext
+        // toLogcat is false above: both writes to logcat already.
         val both: (String) -> Unit = { Log.i(TAG, it); log(it) }
         return Enroller(AndroidDeviceKeys(both), SuggestionInstaller(app, both), PrefsStateStore(app), both)
     }

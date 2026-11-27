@@ -88,7 +88,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences(NetworkPrefs.PREFS, MODE_PRIVATE)
         wifi = getSystemService(WifiManager::class.java)
-        enroller = Enrollment.enroller(this) { AppLog.add(it, toLogcat = false) }
+        enroller = Enrollment.enroller(this)
         deviceKeys = AndroidDeviceKeys()
         setContentView(R.layout.activity_main)
         Ui.edgeToEdge(this, findViewById(R.id.root))

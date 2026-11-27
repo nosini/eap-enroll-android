@@ -88,7 +88,8 @@ phone.
 - **Remove enrollment** (in the menu) deletes the app's keys and
   certificates and removes the network from Wi-Fi. It doesn't revoke
   anything on the server; ask the administrator to disable the device.
-- **Activity log** (in the menu) shows what the app did, for bug reports.
+- **Activity log** (in the menu) shows what the app did, including
+  background checks and connection handling, for bug reports.
 
 ## Permissions
 

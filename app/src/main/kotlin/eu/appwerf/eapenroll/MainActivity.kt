@@ -10,6 +10,8 @@ import android.content.res.ColorStateList
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -26,7 +28,6 @@ import android.widget.TextView
 import java.math.BigInteger
 import java.text.DateFormat
 import java.util.Date
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
@@ -38,7 +39,6 @@ class MainActivity : Activity() {
     private lateinit var wifi: WifiManager
     private lateinit var enroller: Enroller
     private lateinit var deviceKeys: AndroidDeviceKeys
-    private val worker: ExecutorService = Executors.newSingleThreadExecutor()
 
     private lateinit var scroll: ScrollView
     private lateinit var statusCard: LinearLayout
@@ -66,15 +66,9 @@ class MainActivity : Activity() {
     private class Snapshot(val state: EnrollmentState?, val deviceKey: String?, val now: Long)
 
     private var snapshot: Snapshot? = null
-    private var busy = false
-    private var message: String? = null
     private var approval: Int? = null
-
-    /** The user asked to set up again while enrolled (menu or a scanned link). */
-    private var setupRequested = false
-
-    /** A setup waiting for the answer to the local network permission request. */
-    private var pendingSetup: SetupUri? = null
+    private val screen = MainScreen
+    private val onWorkFinished: () -> Unit = { refresh() }
 
     private val approvalListener = WifiManager.SuggestionUserApprovalStatusListener { status ->
         if (approval != status) AppLog.add("Suggestion approval: ${WifiSetup.approvalName(status)}")
@@ -91,6 +85,19 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         Ui.edgeToEdge(this, findViewById(R.id.root))
         bindViews()
+        // The link isn't saved with the activity (it holds the one-time code);
+        // kept in memory only while the activity is recreated.
+        screen.setupText?.let { setupField.setText(it) }
+        screen.setupText = null
+        // Nothing to show until the state has been read, which may wait
+        // for a request still running.
+        statusCard.visibility = if (screen.busy) View.VISIBLE else View.GONE
+        busyBar.visibility = if (screen.busy) View.VISIBLE else View.GONE
+        if (screen.busy) showStatus(Tone.INFO, getString(R.string.status_working), null)
+        messageView.visibility = View.GONE
+        setupCard.visibility = View.GONE
+        detailsCard.visibility = View.GONE
+        screen.listener = onWorkFinished
         AppLog.addOnce(::deviceInfo)
         handleSetupIntent(intent)
     }
@@ -124,7 +131,7 @@ class MainActivity : Activity() {
         }
         pasteButton.setOnClickListener { pasteSetupLink() }
         setupButton.setOnClickListener { setUp() }
-        checkButton.setOnClickListener { run(Action.CHECK) { enroller.maintain(byUser = true) } }
+        checkButton.setOnClickListener { run(Action.CHECK) { Result.Of(enroller.maintain(byUser = true)) } }
         renewButton.setOnClickListener { renewWifiNow() }
         setupWpa3.setOnCheckedChangeListener { _, checked ->
             prefs.edit().putBoolean(NetworkPrefs.WPA3, checked).apply()
@@ -158,7 +165,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        worker.shutdown()
+        if (screen.listener === onWorkFinished) screen.listener = null
+        screen.setupText = if (isChangingConfigurations) setupField.text.toString() else null
         super.onDestroy()
     }
 
@@ -166,10 +174,11 @@ class MainActivity : Activity() {
 
     /** Reads the state on the worker (it may wait for a running request) and renders it. */
     private fun refresh() {
-        worker.execute {
+        val app = applicationContext
+        screen.execute {
             val snap = try {
                 val state = enroller.state()
-                if (state != null && state.problem == null) scheduleQuietly { Jobs.scheduleDaily(this) }
+                if (state != null && state.problem == null) scheduleQuietly { Jobs.scheduleDaily(app) }
                 val key = state?.let { runCatching { deviceKeys.describeWithAttestation(it.deviceAlias) }.getOrNull() }
                 Snapshot(state, key, System.currentTimeMillis())
             } catch (e: Exception) {
@@ -177,6 +186,7 @@ class MainActivity : Activity() {
                 Snapshot(null, null, System.currentTimeMillis())
             }
             runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
                 snapshot = snap
                 render(snap)
             }
@@ -185,9 +195,15 @@ class MainActivity : Activity() {
 
     private fun render(snap: Snapshot) {
         val state = snap.state
+        val busy = screen.busy
+        val message = screen.message
+        if (screen.setupUsed) {
+            screen.setupUsed = false
+            setupField.setText("")
+        }
         val stopped = state?.problem == Problem.NEEDS_SETUP || state?.problem == Problem.DISABLED
-        if (state == null || stopped) setupRequested = false
-        setupCard.visibility = if (state == null || stopped || setupRequested) View.VISIBLE else View.GONE
+        if (state == null || stopped) screen.setupRequested = false
+        setupCard.visibility = if (state == null || stopped || screen.setupRequested) View.VISIBLE else View.GONE
         setupTitle.setText(if (state == null) R.string.setup_title else R.string.setup_again_title)
 
         statusCard.visibility = if (state != null || busy || message != null) View.VISIBLE else View.GONE
@@ -210,10 +226,11 @@ class MainActivity : Activity() {
     }
 
     private fun updateButtons() {
+        val busy = screen.busy
         checkButton.isEnabled = !busy
         renewButton.isEnabled = !busy
         pasteButton.isEnabled = !busy
-        setupButton.isEnabled = !busy && setupField.text.isNotBlank()
+        setupButton.isEnabled = !busy && screen.pendingSetup == null && setupField.text.isNotBlank()
     }
 
     private enum class Tone { OK, INFO, WARNING, ERROR }
@@ -409,7 +426,7 @@ class MainActivity : Activity() {
             when (item.itemId) {
                 MENU_WIFI -> startActivity(Intent(Settings.Panel.ACTION_WIFI))
                 MENU_SET_UP_AGAIN -> {
-                    setupRequested = true
+                    screen.setupRequested = true
                     snapshot?.let(::render)
                     scroll.post { scroll.smoothScrollTo(0, setupCard.top) }
                 }
@@ -433,7 +450,7 @@ class MainActivity : Activity() {
 
     // Actions
 
-    private enum class Action { SETUP, CHECK, RENEW }
+    private enum class Action { SETUP, CHECK, RENEW, REMOVE }
 
     private fun handleSetupIntent(intent: Intent?) {
         val data = intent?.data ?: return
@@ -446,7 +463,7 @@ class MainActivity : Activity() {
         try {
             val link = SetupUri.parse(data.toString())
             setupField.setText(data.toString())
-            setupRequested = true
+            screen.setupRequested = true
             showMessage(getString(R.string.link_filled_in, link.serverUrl))
         } catch (e: Exception) {
             showMessage(getString(R.string.result_failed, Errors.describe(e)))
@@ -469,12 +486,14 @@ class MainActivity : Activity() {
             showMessage(getString(R.string.result_failed, Errors.describe(e)))
             return
         }
+        if (screen.busy || screen.pendingSetup != null) return
         prefs.edit().putBoolean(NetworkPrefs.WPA3, setupWpa3.isChecked).apply()
         // Asked for before the first request: the app can't tell whether the
         // server is on the local network, and a blocked connection only times
         // out. Setup goes ahead whatever the answer.
         if (!localNetworkGranted()) {
-            pendingSetup = link
+            screen.pendingSetup = link
+            updateButtons()
             requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
             return
         }
@@ -482,61 +501,72 @@ class MainActivity : Activity() {
     }
 
     private fun startSetup(link: SetupUri) {
+        val app = applicationContext
         run(Action.SETUP) {
-            val outcome = enroller.setup(link)
-            scheduleQuietly { Jobs.scheduleDaily(this) }
-            outcome
+            val before = runCatching { enroller.state()?.deviceAlias }.getOrNull()
+            try {
+                val outcome = enroller.setup(link)
+                scheduleQuietly { Jobs.scheduleDaily(app) }
+                Result.Of(outcome)
+            } finally {
+                // A new device credential was stored: the link is used up,
+                // whatever happened after that. A setup that failed before
+                // leaves the link in the field to be tried again.
+                val after = runCatching { enroller.state()?.deviceAlias }.getOrNull()
+                if (after != null && after != before) screen.markSetupUsed()
+            }
         }
     }
 
     /** Asks for a new Wi-Fi certificate unless unconfirmed ones would pile up on the server. */
     private fun renewWifiNow() {
-        // The state is read on the worker: the enroller's lock may be held by a running request.
-        worker.execute {
-            val refusal = runCatching { Enroller.manualWifiRenewalRefusal(enroller.state(), System.currentTimeMillis()) }
-                .getOrNull()
-            runOnUiThread {
-                if (refusal != null) {
-                    AppLog.add(refusal)
-                    showMessage(refusal)
-                } else {
-                    run(Action.RENEW) { enroller.maintain(renewWifi = true, byUser = true) }
-                }
+        run(Action.RENEW) {
+            // Read on the worker: the enroller's lock may be held by a running request.
+            val refusal = Enroller.manualWifiRenewalRefusal(enroller.state(), System.currentTimeMillis())
+            if (refusal != null) {
+                AppLog.add(refusal)
+                return@run Result.Text(refusal)
             }
+            Result.Of(enroller.maintain(renewWifi = true, byUser = true))
         }
     }
 
-    /** Runs [block] on the worker, shows its outcome and refreshes the status. */
-    private fun run(action: Action, block: () -> Enroller.Outcome) {
-        if (busy) return
-        busy = true
-        message = null
-        snapshot?.let(::render)
-        AppLog.add("${action.name.lowercase()}: started")
-        worker.execute {
+    /** What an action ended with: an outcome of the enroller, or text to show as it is. */
+    private sealed interface Result {
+        class Of(val outcome: Enroller.Outcome) : Result
+
+        class Text(val text: String) : Result
+    }
+
+    /**
+     * Runs [block] on the screen's worker, one action at a time, and shows
+     * its result in whichever activity is there when it ends.
+     */
+    private fun run(action: Action, block: () -> Result) {
+        if (!screen.start()) return
+        snapshot?.let(::render) ?: updateButtons()
+        val app = applicationContext
+        val name = action.name.lowercase()
+        AppLog.add("$name: started")
+        screen.execute {
             val before = runCatching { enroller.state()?.wifiChain?.get(0)?.serialNumber }.getOrNull()
             val text = try {
-                val outcome = block()
-                val after = enroller.state()
-                scheduleQuietly { Jobs.followUp(this, outcome, after) }
-                AppLog.add("${action.name.lowercase()}: $outcome")
-                describe(action, outcome, after, before)
-            } catch (e: Exception) {
-                AppLog.add("${action.name.lowercase()} failed: ${Errors.describe(e)}")
-                val advice = if (action == Action.SETUP) Enroller.setupLinkAdvice(e)?.let { "\n\n$it" } else null
-                getString(R.string.result_failed, Errors.describe(e)) + advice.orEmpty()
-            }
-            Notifier.update(this)
-            val setUp = action == Action.SETUP && runCatching { enroller.state() != null }.getOrDefault(false)
-            runOnUiThread {
-                busy = false
-                message = text
-                if (setUp) {
-                    setupField.setText("")
-                    setupRequested = false
+                when (val result = block()) {
+                    is Result.Text -> result.text
+                    is Result.Of -> {
+                        val after = enroller.state()
+                        scheduleQuietly { Jobs.followUp(app, result.outcome, after) }
+                        AppLog.add("$name: ${result.outcome}")
+                        describe(action, result.outcome, after, before)
+                    }
                 }
-                refresh()
+            } catch (e: Exception) {
+                AppLog.add("$name failed: ${Errors.describe(e)}")
+                val advice = if (action == Action.SETUP) Enroller.setupLinkAdvice(e)?.let { "\n\n$it" } else null
+                app.getString(R.string.result_failed, Errors.describe(e)) + advice.orEmpty()
             }
+            Notifier.update(app)
+            screen.finish(text)
         }
     }
 
@@ -563,28 +593,19 @@ class MainActivity : Activity() {
     }
 
     private fun showMessage(text: String) {
-        message = text
+        screen.message = text
         snapshot?.let(::render)
     }
 
     private fun removeEnrollment() {
-        worker.execute {
-            val text = try {
-                enroller.forget()
-                deviceKeys.deleteOthers(emptySet())
-                Jobs.cancelAll(this)
-                val status = wifi.removeNetworkSuggestions(emptyList())
-                AppLog.add("Enrollment removed; suggestions removed: ${WifiSetup.statusName(status)}")
-                getString(R.string.removed)
-            } catch (e: Exception) {
-                AppLog.add("Removing enrollment failed: ${Errors.describe(e)}")
-                getString(R.string.result_failed, Errors.describe(e))
-            }
-            Notifier.update(this)
-            runOnUiThread {
-                message = text
-                refresh()
-            }
+        val app = applicationContext
+        run(Action.REMOVE) {
+            enroller.forget()
+            deviceKeys.deleteOthers(emptySet())
+            Jobs.cancelAll(app)
+            val status = wifi.removeNetworkSuggestions(emptyList())
+            AppLog.add("Enrollment removed; suggestions removed: ${WifiSetup.statusName(status)}")
+            Result.Text(app.getString(R.string.removed))
         }
     }
 
@@ -604,8 +625,11 @@ class MainActivity : Activity() {
                 if (grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
         })
         if (requestCode == REQUEST_LOCAL_NETWORK) {
-            pendingSetup?.let(::startSetup)
-            pendingSetup = null
+            val link = screen.pendingSetup
+            screen.pendingSetup = null
+            // Empty when the request was interrupted before the user answered:
+            // the user can tap "Set up" again.
+            if (link != null && permissions.isNotEmpty()) startSetup(link)
         }
         refresh()
     }
@@ -636,5 +660,63 @@ class MainActivity : Activity() {
         const val MENU_MANUAL = 3
         const val MENU_LOG = 4
         const val MENU_REMOVE = 5
+    }
+}
+
+/**
+ * The main screen's work, and what the screen shows while its activity is
+ * recreated (rotation, or leaving and coming back): work started from one
+ * activity runs on a worker thread that outlives it, one action at a time,
+ * and its result goes to the activity that is there when it ends. Fields
+ * are for the main thread only.
+ */
+private object MainScreen {
+    private val worker = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+
+    /** An action is running. */
+    var busy = false
+        private set
+
+    /** The last action's result. */
+    var message: String? = null
+
+    /** The user asked to set up again while enrolled (menu or a scanned link). */
+    var setupRequested = false
+
+    /** A setup waiting for the answer to the local network permission request. */
+    var pendingSetup: SetupUri? = null
+
+    /** The setup field's text while the activity is recreated. */
+    var setupText: String? = null
+
+    /** A setup used up the link in the field; the next render clears it. */
+    var setupUsed = false
+
+    /** The current activity, told when an action has ended. */
+    var listener: (() -> Unit)? = null
+
+    fun execute(block: () -> Unit) = worker.execute(block)
+
+    /** Marks an action as running; false if one already is. */
+    fun start(): Boolean {
+        if (busy) return false
+        busy = true
+        message = null
+        return true
+    }
+
+    /** From the worker: the setup's link has been used up. */
+    fun markSetupUsed() = main.post {
+        setupUsed = true
+        setupRequested = false
+        setupText = null
+    }
+
+    /** From the worker: the action has ended with [text]. */
+    fun finish(text: String) = main.post {
+        busy = false
+        message = text
+        listener?.invoke()
     }
 }

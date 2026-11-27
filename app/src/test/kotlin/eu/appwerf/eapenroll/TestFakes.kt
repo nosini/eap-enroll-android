@@ -105,11 +105,12 @@ fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").di
 /**
  * A local HTTPS server that answers every request with [answer], for
  * testing how the client handles the server's error answers. Its
- * certificate is for "localhost", issued by [ca]; [caFingerprint] goes where
- * the setup link's fingerprint would. It asks for a client certificate
- * without requiring one, accepts any, and records it.
+ * certificate is for [hostName], issued by [ca]; [caFingerprint] goes where
+ * the setup link's fingerprint would. It speaks TLS 1.3 only, like the real
+ * server. It asks for a client certificate without requiring one, accepts
+ * any, and records it.
  */
-class FakeEstServer : AutoCloseable {
+class FakeEstServer(hostName: String = "localhost") : AutoCloseable {
     class Request(
         val method: String,
         val path: String,
@@ -140,12 +141,15 @@ class FakeEstServer : AutoCloseable {
     val caFingerprint: String = Hex.encode(sha256(ca.cert.encoded))
     val requests: MutableList<Request> = Collections.synchronizedList(ArrayList())
 
+    /** Client certificates received in handshakes, whether or not a request followed. */
+    val handshakeClientCertificates: MutableList<X509Certificate> = Collections.synchronizedList(ArrayList())
+
     @Volatile
     var answer: (Request) -> Answer = { Answer(500, "no answer configured") }
 
     private val server: HttpsServer = HttpsServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
         val keys = TestPki.keyPair()
-        val leaf = TestPki.leaf(ca, "localhost", keys, serverAuth = true)
+        val leaf = TestPki.leaf(ca, hostName, keys, serverAuth = true)
         val password = CharArray(0)
         val store = KeyStore.getInstance("PKCS12").apply {
             load(null)
@@ -153,10 +157,15 @@ class FakeEstServer : AutoCloseable {
         }
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
             .apply { init(store, password) }.keyManagers
-        val context = SSLContext.getInstance("TLS").apply { init(keyManagers, arrayOf(AcceptAnyClient()), null) }
+        val context = SSLContext.getInstance("TLS").apply {
+            init(keyManagers, arrayOf(AcceptAnyClient(handshakeClientCertificates)), null)
+        }
         httpsConfigurator = object : HttpsConfigurator(context) {
             override fun configure(params: HttpsParameters) {
-                params.setSSLParameters(context.defaultSSLParameters.apply { wantClientAuth = true })
+                params.setSSLParameters(context.defaultSSLParameters.apply {
+                    wantClientAuth = true
+                    protocols = arrayOf("TLSv1.3")
+                })
             }
         }
         createContext("/") { exchange ->
@@ -183,8 +192,10 @@ class FakeEstServer : AutoCloseable {
 
     val url: String = "https://localhost:${server.address.port}"
 
-    private class AcceptAnyClient : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+    private class AcceptAnyClient(private val seen: MutableList<X509Certificate>) : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+            chain?.firstOrNull()?.let { seen += it }
+        }
 
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) =
             throw CertificateException("not a client")

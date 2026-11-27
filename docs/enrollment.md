@@ -69,6 +69,12 @@ eapenroll://setup?ca=<SHA-256 hex>&code=<one-time code>&url=https://enroll.examp
 - The app trusts only the CA with that fingerprint for the server, taken
   from the server's own chain; no trust on first use. The code is never
   logged.
+- Connections to the server are TLS 1.3 only. The pinned CA must be
+  within its validity period, and the server's own certificate must not
+  be a CA certificate. The server's certificate must name the host from
+  the link (subject alternative names only, a wildcard for one label at
+  most). The app checks this within the handshake, so a server with
+  another name under the same CA never sees the device credential.
 - Setup never offers the device credential, even when the phone is
   already enrolled: the server checks a client certificate in the TLS
   handshake, and an expired one would fail the handshake before the code

@@ -41,8 +41,9 @@ data class WifiProfile(
  * copied, so nothing may carry the old certificate:
  *
  * - Each client has its own SSLContext, so its TLS sessions are never
- *   resumed by another client; [close] invalidates them and refuses further
- *   requests.
+ *   resumed by another client, and [close] makes it refuse further
+ *   requests. Connections are TLS 1.3 only, where a session can only be
+ *   resumed with a ticket from the server, and the server sends none.
  * - Every request asks for `Connection: close`, so no connection stays in
  *   the platform's pool after its answer.
  * - The credential is offered only on the requests that need it, never on
@@ -58,6 +59,8 @@ class EstClient(
     private val base = SetupUri.normalizeServerUrl(serverUrl) + "/.well-known/est/"
     private val anonymous: SSLContext = EstTls.context(caFingerprint, null)
     private val authenticated: SSLContext? = credential?.let { EstTls.context(caFingerprint, it) }
+    private val anonymousSockets = EstTls.socketFactory(anonymous)
+    private val authenticatedSockets = authenticated?.let(EstTls::socketFactory)
 
     @Volatile
     private var closed = false
@@ -103,8 +106,10 @@ class EstClient(
         certificates(request("GET", "wifi/cacerts", null, null, null, withCredential = false)!!)
 
     /**
-     * Invalidates this client's TLS sessions; later requests throw. Its
-     * connections aren't pooled, so none is left open.
+     * Later requests throw. Its connections aren't pooled, so none is left
+     * open. Invalidating the cached TLS sessions is only a precaution:
+     * Android's session cache lists no session IDs, so it does nothing
+     * there, and the context isn't used again anyway.
      */
     override fun close() {
         closed = true
@@ -139,10 +144,10 @@ class EstClient(
         withCredential: Boolean = true,
     ): Response? {
         check(!closed) { "This client was closed; its credential may have been replaced" }
-        val context = if (withCredential) authenticated ?: anonymous else anonymous
+        val sockets = if (withCredential) authenticatedSockets ?: anonymousSockets else anonymousSockets
         val connection = URL(base + path).openConnection() as HttpsURLConnection
         try {
-            connection.sslSocketFactory = context.socketFactory
+            connection.sslSocketFactory = sockets
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.instanceFollowRedirects = false

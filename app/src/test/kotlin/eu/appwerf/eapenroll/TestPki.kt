@@ -20,9 +20,13 @@ object TestPki {
     fun keyPair(curve: String = "secp256r1"): KeyPair =
         KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec(curve)) }.generateKeyPair()
 
-    fun root(name: String): Issuer {
+    fun root(
+        name: String,
+        notBefore: Date = Date(System.currentTimeMillis() - 3_600_000),
+        notAfter: Date = Date(System.currentTimeMillis() + 86_400_000),
+    ): Issuer {
         val keys = keyPair()
-        return Issuer(certificate(name, keys, name, keys, ca = true), keys)
+        return Issuer(certificate(name, keys, name, keys, ca = true, notBefore = notBefore, notAfter = notAfter), keys)
     }
 
     fun intermediate(parent: Issuer, name: String): Issuer {
@@ -37,7 +41,10 @@ object TestPki {
         notBefore: Date = Date(System.currentTimeMillis() - 3_600_000),
         notAfter: Date = Date(System.currentTimeMillis() + 86_400_000),
         serverAuth: Boolean = false,
-    ): X509Certificate = certificate(name, keys, parent.cert.subjectCn(), parent.keyPair, false, notBefore, notAfter, serverAuth)
+        /** Subject alternative names of a server certificate: host names or IP addresses. */
+        altNames: List<String> = listOf(name),
+    ): X509Certificate =
+        certificate(name, keys, parent.cert.subjectCn(), parent.keyPair, false, notBefore, notAfter, serverAuth, altNames)
 
     private fun X509Certificate.subjectCn() = Certs.commonName(this)
 
@@ -65,6 +72,7 @@ object TestPki {
         notBefore: Date = Date(System.currentTimeMillis() - 3_600_000),
         notAfter: Date = Date(System.currentTimeMillis() + 86_400_000),
         serverAuth: Boolean = false,
+        altNames: List<String> = emptyList(),
     ): X509Certificate {
         val algorithm = Der.sequence(Der.oid("1.2.840.10045.4.3.2"))
         val extensions = ArrayList<ByteArray>()
@@ -76,8 +84,15 @@ object TestPki {
             val eku = if (serverAuth) "1.3.6.1.5.5.7.3.1" else "1.3.6.1.5.5.7.3.2"
             extensions += extension("2.5.29.37", false, Der.sequence(Der.oid(eku)))
             if (serverAuth) {
-                // subjectAltName: dNSName "localhost"
-                extensions += extension("2.5.29.17", false, Der.sequence(Der.tlv(0x82, "localhost".toByteArray())))
+                val names = altNames.map {
+                    // iPAddress for a literal, otherwise dNSName.
+                    if (it.contains(':') || it.matches(Regex("""[0-9.]+"""))) {
+                        Der.tlv(0x87, java.net.InetAddress.getByName(it).address)
+                    } else {
+                        Der.tlv(0x82, it.toByteArray())
+                    }
+                }
+                extensions += extension("2.5.29.17", false, Der.sequence(*names.toTypedArray()))
             }
         }
         val tbs = Der.sequence(

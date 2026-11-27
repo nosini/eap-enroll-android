@@ -166,21 +166,26 @@ class RenewJobService : JobService() {
             var outcome = Enroller.Outcome.RETRY
             var state: EnrollmentState? = null
             try {
-                val enroller = Enrollment.enroller(this)
-                outcome = enroller.maintain()
-                AppLog.add("Background check: $outcome")
-                state = runCatching { enroller.state() }.getOrNull()
-                Notifier.update(this)
-            } catch (e: Exception) {
-                AppLog.add("Background renewal failed: ${Errors.describe(e)}")
+                try {
+                    val enroller = Enrollment.enroller(this)
+                    outcome = enroller.maintain()
+                    AppLog.add("Background check: $outcome")
+                    state = runCatching { enroller.state() }.getOrNull()
+                    Notifier.update(this)
+                } catch (e: Exception) {
+                    AppLog.add("Background renewal failed: ${Errors.describe(e)}")
+                }
+                // Before jobFinished(), which releases the wake lock: the
+                // process may be frozen or killed right after it. Cancelling
+                // all jobs here stops this one too, and a cancelled job isn't
+                // rescheduled whatever onStopJob() answers.
+                try {
+                    Jobs.followUp(this, outcome, state, params.jobId)
+                } catch (e: Exception) {
+                    AppLog.add("Scheduling the next check failed: ${Errors.describe(e)}")
+                }
             } finally {
                 jobFinished(params, outcome == Enroller.Outcome.RETRY && params.jobId == Jobs.SOON)
-            }
-            // After jobFinished(): cancelling all jobs cancels this one too.
-            try {
-                Jobs.followUp(this, outcome, state, params.jobId)
-            } catch (e: Exception) {
-                AppLog.add("Scheduling the next check failed: ${Errors.describe(e)}")
             }
         }.start()
         return true

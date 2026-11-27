@@ -1,11 +1,15 @@
 package eu.appwerf.eapenroll
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -304,13 +308,36 @@ class ManualSetupActivity : Activity() {
         }
     }
 
+    /**
+     * Hands the network to Settings. The suggestion carries the private key
+     * in the clear, and any app can claim this action, so it goes only to a
+     * system app, named explicitly.
+     */
     private fun saveThroughSettings() {
+        val action = Intent(Settings.ACTION_WIFI_ADD_NETWORKS)
+        val handler = systemActivityFor(action)
+            ?: throw IllegalStateException("No system app on this phone adds Wi-Fi networks this way")
         val suggestion = buildSuggestion()
-        val intent = Intent(Settings.ACTION_WIFI_ADD_NETWORKS).apply {
+        val intent = action.apply {
+            component = handler
             putParcelableArrayListExtra(Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(suggestion))
         }
         @Suppress("DEPRECATION")
         startActivityForResult(intent, REQUEST_ADD_NETWORKS)
+    }
+
+    /** The system activity for [intent], Settings if there are several. */
+    private fun systemActivityFor(intent: Intent): ComponentName? {
+        val flags = (PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY).toLong()
+        val handlers = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(flags))
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentActivities(intent, flags.toInt())
+        }.map { it.activityInfo }
+            .filter { it.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0 }
+        val chosen = handlers.firstOrNull { it.packageName == SETTINGS_PACKAGE } ?: handlers.firstOrNull()
+        return chosen?.let { ComponentName(it.packageName, it.name) }
     }
 
     private fun listSuggestions() {
@@ -351,5 +378,6 @@ class ManualSetupActivity : Activity() {
         const val REQUEST_SAVE_CSR = 3
         const val REQUEST_ADD_NETWORKS = 4
         const val MAX_IMPORT_BYTES = 64 * 1024
+        const val SETTINGS_PACKAGE = "com.android.settings"
     }
 }

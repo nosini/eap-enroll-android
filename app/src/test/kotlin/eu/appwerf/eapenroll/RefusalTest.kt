@@ -208,6 +208,59 @@ class RefusalTest {
         assertEquals(2, server.requests.size)
     }
 
+    /** A disabled account, with a device credential that isn't due and a Wi-Fi certificate that isn't either. */
+    private fun userDisabledNothingDue() {
+        pendingConfirmation(wifiNotAfter = now + 50 * day)
+        store.save(store.load()!!.copy(confirmPending = false, connectedAfterInstall = false, problem = Problem.USER_DISABLED))
+    }
+
+    private val radiusProfile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert))
+
+    @Test
+    fun disabledUserWithNothingDueIsCheckedWithTheServer() {
+        userDisabledNothingDue()
+        answer(403, "Enroll-Error" to "user_disabled")
+        assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(byUser = true))
+        assertEquals(listOf("wifi/profile"), server.requests.map { it.path })
+        assertEquals(Problem.USER_DISABLED, store.load()!!.problem)
+
+        server.answer = { FakeEstServer.profile(radiusProfile) }
+        assertEquals(Enroller.Outcome.OK, enroller.maintain(byUser = true))
+        assertNull(store.load()!!.problem)
+    }
+
+    @Test
+    fun disabledUserStaysSoWithoutProof() {
+        userDisabledNothingDue()
+        answer(404)
+        assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(byUser = true))
+        assertEquals(Problem.USER_DISABLED, store.load()!!.problem)
+    }
+
+    @Test
+    fun enabledAgainEvenWhenTheRestOfTheCheckFails() {
+        // Device credential due (from @Before); its attestation is refused.
+        store.save(store.load()!!.copy(problem = Problem.USER_DISABLED))
+        server.answer = {
+            when (it.path) {
+                "wifi/profile" -> FakeEstServer.profile(radiusProfile)
+                else -> FakeEstServer.Answer(403, "refused\n", mapOf("Enroll-Error" to "attestation_refused"))
+            }
+        }
+        assertEquals(Enroller.Outcome.LATER, enroller.maintain(byUser = true))
+        assertNull(store.load()!!.problem)
+
+        // Nothing due; the Wi-Fi renewal asked for fails.
+        userDisabledNothingDue()
+        server.answer = {
+            if (it.path == "wifi/profile") FakeEstServer.profile(radiusProfile) else FakeEstServer.Answer(503, "unavailable\n")
+        }
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain(renewWifi = true, byUser = true))
+        assertNull(store.load()!!.problem)
+        // The background checks run again (nothing is due for them).
+        assertEquals(Enroller.Outcome.OK, enroller.maintain())
+    }
+
     @Test
     fun disabledDeviceNeedsSetup() {
         for (reason in listOf("device_disabled", "credential_reuse", null)) {

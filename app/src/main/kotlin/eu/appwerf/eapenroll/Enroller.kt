@@ -309,6 +309,23 @@ class Enroller(
         try {
             // Before anything else, such as making a key for a renewal that can't work.
             checkNotExpired(state.deviceChain[0])
+            // A disabled account (checked again only because the user asked)
+            // counts as enabled once the server has answered an authenticated
+            // request past its account check. Cleared at once, so a later
+            // failure doesn't bring it back.
+            var accountChecked = state.problem != Problem.USER_DISABLED
+            fun accountEnabled() {
+                if (state.problem == Problem.USER_DISABLED) {
+                    state = state.copy(problem = null)
+                    store.save(state)
+                    log("The account is enabled again")
+                }
+                accountChecked = true
+            }
+            // With nothing due, nothing else would be sent at all.
+            // wifi/profile is authenticated and checks the account; without a
+            // profile on the server (404) it proves nothing.
+            if (!accountChecked && client(state).wifiProfile() != null) accountEnabled()
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
             }
@@ -323,8 +340,10 @@ class Enroller(
             if (state.confirmPending && state.connectedAfterInstall) {
                 try {
                     state = confirmWifi(state)
+                    accountEnabled()
                 } catch (e: EstException) {
                     if (e.status != 400 || e.reason !in SERIAL_NOT_CURRENT) throw e
+                    accountEnabled()
                     log("Wi-Fi certificate ${state.wifiChain!![0].serialNumber.toString(16)} can't be confirmed; " +
                         "requesting a new one: ${Errors.describe(e)}")
                     wifiNotCurrent = true
@@ -338,8 +357,11 @@ class Enroller(
             if (Certs.renewalDue(state.deviceChain[0], now)) {
                 try {
                     state = renewDeviceCredential(state)
+                    accountEnabled()
                 } catch (e: Exception) {
                     if (!keepsCurrentCredential(e)) throw e
+                    // The server checks the account before the attestation.
+                    if (e is EstException) accountEnabled()
                     log("Device credential renewal failed; keeping the current credential: ${Errors.describe(e)}")
                     deviceRenewalFailure = e
                 }
@@ -347,6 +369,11 @@ class Enroller(
             val wifiChain = state.wifiChain
             if (renewWifi || wifiNotCurrent || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
                 state = renewWifi(state)
+                accountEnabled()
+            }
+            if (!accountChecked) {
+                log("Nothing showed that the account is enabled again (the server has no Wi-Fi profile)")
+                return Outcome.STOPPED
             }
             when (val e = deviceRenewalFailure) {
                 null -> {}

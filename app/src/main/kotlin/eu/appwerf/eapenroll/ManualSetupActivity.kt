@@ -43,6 +43,9 @@ class ManualSetupActivity : Activity() {
     private lateinit var certSummary: TextView
     private lateinit var messageView: TextView
 
+    /** A remove-networks dialog is being prepared or shown; further taps wait. */
+    private var removeSuggestionsPending = false
+
     private val caFile get() = File(filesDir, "ca.pem")
     private val csrFile get() = File(noBackupFilesDir, "csr.pem")
     private val chainFile get() = File(noBackupFilesDir, "chain.pem")
@@ -353,10 +356,29 @@ class ManualSetupActivity : Activity() {
     }
 
     private fun removeSuggestions() {
+        if (removeSuggestionsPending) return
+        removeSuggestionsPending = true
+        val app = applicationContext
         // state() may wait for a request that holds the enroller's lock.
         Thread {
-            val enrolled = runCatching { Enrollment.enroller(this).state() != null }.getOrDefault(false)
-            runOnUiThread { confirmRemoveSuggestions(enrolled) }
+            // A state that can't be read still means an enrollment: the
+            // automatic network's suggestion may be there, so warn that it
+            // is removed too.
+            val enrolled = try {
+                Enrollment.enroller(app).state() != null
+            } catch (e: Exception) {
+                AppLog.add("Reading the enrollment failed: ${Errors.describe(e)}")
+                true
+            }
+            runOnUiThread {
+                // The activity may be gone by now (Back, rotation); showing
+                // a dialog on it would throw.
+                if (isFinishing || isDestroyed) {
+                    removeSuggestionsPending = false
+                } else {
+                    confirmRemoveSuggestions(enrolled)
+                }
+            }
         }.start()
     }
 
@@ -366,9 +388,12 @@ class ManualSetupActivity : Activity() {
             .setMessage(if (enrolled) R.string.remove_networks_enrolled_text else R.string.remove_networks_text)
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.remove) { _, _ ->
-                val status = wifi.removeNetworkSuggestions(emptyList())
-                show("Removed this app's networks: ${WifiSetup.statusName(status)}")
+                attempt {
+                    val status = wifi.removeNetworkSuggestions(emptyList())
+                    show("Removed this app's networks: ${WifiSetup.statusName(status)}")
+                }
             }
+            .setOnDismissListener { removeSuggestionsPending = false }
             .show()
     }
 

@@ -35,6 +35,13 @@ class SetupUriTest {
     }
 
     @Test
+    fun acceptsThePortsAtTheEdgesOfTheRange() {
+        assertEquals("https://enroll.example.org:1", SetupUri.normalizeServerUrl("https://enroll.example.org:1"))
+        assertEquals("https://enroll.example.org:65535", SetupUri.normalizeServerUrl("https://enroll.example.org:65535"))
+        assertEquals("https://enroll.example.org", SetupUri.normalizeServerUrl("https://enroll.example.org"))
+    }
+
+    @Test
     fun rejectsBadLinks() {
         val good = "ca=$ca&code=$code&url=https://enroll.example.org&v=1"
         for (bad in listOf(
@@ -46,6 +53,9 @@ class SetupUriTest {
             "eapenroll://setup?ca=$ca&code=$code&url=http://enroll.example.org&v=1",
             "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org/est&v=1",
             "eapenroll://setup?ca=$ca&code=$code&url=https://user@enroll.example.org&v=1",
+            "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org:0&v=1",
+            "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org:65536&v=1",
+            "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org:99999&v=1",
             "eapenroll://setup?ca=abcd&code=$code&url=https://enroll.example.org&v=1",
             "eapenroll://setup?ca=$ca&code=${code.lowercase()}&url=https://enroll.example.org&v=1",
             "eapenroll://setup?ca=$ca&code=${code}A&url=https://enroll.example.org&v=1",

@@ -1,14 +1,13 @@
 # Enrollment and renewal: the app's side
 
-Updated 2026-11-21. The app gets its certificates from an enrollment
-server instead of manual signing, and renews them before they expire. The
-client is built, tested against the server on a computer
-([end-to-end test](../e2e/README.md)) and on a phone against a test server
-([phone tests](#phone-tests)), and on the real network since 2026-11-20.
+The app gets its certificates from an enrollment server instead of manual
+signing, and renews them before they expire.
 
-The server is a separate project, eap-enroll-server. Its
+The server is a separate project,
+[eap-enroll-server](https://github.com/nosini/eap-enroll-server). Its
 `docs/protocol.md` is the reference for the requests; this file describes
-what the app does with them.
+what the app does with them. For automated client-server tests, see
+[e2e/README.md](../e2e/README.md).
 
 ## Credentials on the phone
 
@@ -256,12 +255,11 @@ new certificate was installed:
   its lock only if it is for the stored network and the enrollment isn't
   stopped; a broadcast that arrives while a check holds the lock therefore
   doesn't make the receiver wait, and the check and the recording can't
-  interleave. The confirmation itself runs as a background
-  job at least 30 seconds later (53 seconds on the test phone;
-  JobScheduler treats the delay as a minimum). Right after Wi-Fi
-  connects, the network (and an always-on VPN) is still switching over:
-  during tests, a confirmation sent at once stalled in its TLS handshake
-  until the server gave up after 10 seconds.
+  interleave. The confirmation itself runs as a background job at least 30
+  seconds later (JobScheduler treats the delay as a minimum). Right after
+  Wi-Fi connects, the network and any always-on VPN may still be switching
+  over, so sending a confirmation immediately can stall in its TLS
+  handshake.
 
 A connection through the server proves nothing: the phone may reach it
 over mobile data or a VPN.
@@ -282,8 +280,12 @@ still returns success and keeps the old suggestion (AOSP logs
 `Enterprise network install failure`). The app can't tell, and a later
 connection with the old certificate would confirm the new one. The old
 certificate is then revoked and the phone needs a renewal over another
-network. This hasn't happened in testing; the import worked in the key
-handover test.
+network.
+
+A Wi-Fi certificate revoked outside the enrollment server (for example
+directly in OpenBao) still counts as valid on the server; the app recovers
+with a renewal as long as it can reach the server, through the existing
+connection or another network.
 
 ## Requirements on the server
 
@@ -317,94 +319,3 @@ All met by eap-enroll-server:
   phone whether its account is enabled again. The app works around it
   with a repeated `wifi/confirm`, which needs a confirmed Wi-Fi
   certificate.
-
-## Phone tests
-
-### 2026-11-20: against a test server over `adb reverse`
-
-Pixel 10 Pro XL, Android 17 (API 37), StrongBox present. The server was
-the [end-to-end harness](../e2e/README.md) on a computer, reached through
-`adb reverse`, so the Wi-Fi certificates came from a throwaway CA and the
-suggested network ("Example Net ") doesn't exist.
-
-Worked:
-
-- The device key was generated in StrongBox (EC P-256), and the server
-  accepted TLS client authentication with it: `wifi/simpleenroll` only
-  answers a client presenting the device credential.
-- Setup from the link, the Wi-Fi profile, and installing the first and a
-  second Wi-Fi certificate as a network suggestion.
-- The daily job, started by hand (`cmd jobscheduler run -f`), ran and
-  found nothing due.
-
-Found and fixed on the way:
-
-- On this phone the network is a runtime permission ("Network"), and an
-  update that adds `INTERNET` doesn't get it. Sockets then fail with
-  `SocketException: socket failed: EPERM`; the app now says the network
-  permission is missing.
-- JobScheduler refuses jobs with a network constraint without
-  `ACCESS_NETWORK_STATE`.
-- Reopening the app from recents filled in the (used) setup link again.
-
-### 2026-11-20: key attestation required
-
-The harness with `-attestation-roots` (eap-enroll-server's
-`deploy/attestation-roots.pem`) and `-device-ttl 1h`, still over
-`adb reverse`, on the same phone running GrapheneOS (verified boot state
-SelfSigned, its own boot key). Worked:
-
-- The device key was generated in StrongBox with an attestation the
-  server verified offline against Google's roots, at setup and at a
-  renewal; `enroll_device` and `reenroll_device` logged
-  `attestation_security_level: StrongBox` and
-  `attestation_device_locked: true`.
-- The renewal came due within the hour: the phone's clock was moved
-  forward to just past 2/3 of the credential's lifetime, and "Check and
-  renew now" made a new attested key. The server issued the new
-  credential and revoked the old one as superseded. The expiry warning
-  the clock jump raised on the old credential ("renewing it failed: not
-  tried yet") cleared on the next check.
-
-### 2026-11-20: on the real network
-
-The same phone (GrapheneOS) against the deployed eap-enroll-server, with
-key attestation required, and the network's FreeRADIUS. Worked:
-
-- Setup from a one-time code: the device key in StrongBox with
-  attestation, then the first Wi-Fi certificate. FreeRADIUS logged the
-  login through the app's suggestion.
-- The post-connection broadcast with "while using the app" location:
-  turning Wi-Fi off and on with the app open confirmed the certificate.
-- A manual renewal ("Get a new Wi-Fi certificate now") after the current
-  certificate had been revoked by hand: the new certificate was installed
-  in the suggestion, the phone reconnected, the app confirmed it, and the
-  server revoked the older one as superseded.
-- The same in the background: a renewal over a VPN that reaches the
-  server, then the app left with the home button and Wi-Fi turned off and
-  on. With "all the time" location the app confirmed the new certificate
-  without being opened, and the server revoked the older one.
-
-Found on the way:
-
-- A VPN app in tunnel mode accepts the app's connection itself; if its
-  routing doesn't reach the server, it closes the connection and setup
-  fails with `SSLHandshakeException: connection closed` while the server
-  logs nothing. Either let the VPN reach the server or exclude this app
-  from it.
-- GrapheneOS Camera reads the setup QR code and shows the `eapenroll://`
-  link, but doesn't offer to open it in the app; paste the link into the
-  app's setup field instead. Other camera or QR apps are untested.
-- A Wi-Fi certificate revoked outside the server (for example by hand in
-  OpenBao) still counts as valid there; the app recovers with a renewal as
-  long as it can reach the server, through the old connection or another
-  network.
-
-### Still to test
-
-- That the daily job runs on its own and a renewal comes due without help
-  (the first at about two thirds of 60 days).
-- A device credential renewal with the changes of 2026-11-21 (client
-  closed at the switch, `Connection: close`, no credential on `cacerts`
-  and `device/simpleenroll`). Tested so far against the server on a
-  computer, where Java's `HttpsURLConnection` stands in for Android's.

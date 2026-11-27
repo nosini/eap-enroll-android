@@ -18,7 +18,7 @@ SHA-256 in `gradle/verification-metadata.xml`, locally and in CI. After
 changing a dependency or a plugin version, regenerate the file with the
 tasks that resolve them, from an empty Gradle home as CI starts with (a
 warm cache skips metadata files such as BOMs that a cold one fetches),
-then review the diff (new entries only for what you changed):
+then review the diff (new entries only for the changed dependencies):
 
     GRADLE_USER_HOME=$(mktemp -d) ./gradlew --no-daemon --no-configuration-cache \
       --write-verification-metadata sha256 \

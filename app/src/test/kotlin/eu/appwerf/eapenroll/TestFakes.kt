@@ -19,6 +19,7 @@ import java.util.Collections
 import java.util.Date
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
 /**
@@ -108,8 +109,9 @@ fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").di
  * testing how the client handles the server's error answers. Its
  * certificate is for [hostName], issued by [ca]; [caFingerprint] goes where
  * the setup link's fingerprint would. It speaks TLS 1.3 only, like the real
- * server. It asks for a client certificate without requiring one, accepts
- * any, and records it.
+ * server. Like the real server, it asks for a client certificate without
+ * requiring one, and a client certificate it gets must be valid and issued
+ * by [deviceCa], or the handshake fails. It records every one it gets.
  */
 class FakeEstServer(hostName: String = "localhost") : AutoCloseable {
     class Request(
@@ -148,6 +150,9 @@ class FakeEstServer(hostName: String = "localhost") : AutoCloseable {
     private val root = TestPki.root("Fake EST Root")
     private val ca = TestPki.intermediate(root, "Fake EST CA")
     val caFingerprint: String = Hex.encode(sha256(ca.cert.encoded))
+
+    /** The CA whose client certificates the server accepts: device credentials come from it. */
+    val deviceCa: TestPki.Issuer = TestPki.root("Fake Device CA")
     val requests: MutableList<Request> = Collections.synchronizedList(ArrayList())
 
     /** Client certificates received in handshakes, whether or not a request followed. */
@@ -167,7 +172,7 @@ class FakeEstServer(hostName: String = "localhost") : AutoCloseable {
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
             .apply { init(store, password) }.keyManagers
         val context = SSLContext.getInstance("TLS").apply {
-            init(keyManagers, arrayOf(AcceptAnyClient(handshakeClientCertificates)), null)
+            init(keyManagers, arrayOf(DeviceClients(deviceCa, handshakeClientCertificates)), null)
         }
         httpsConfigurator = object : HttpsConfigurator(context) {
             override fun configure(params: HttpsParameters) {
@@ -201,9 +206,18 @@ class FakeEstServer(hostName: String = "localhost") : AutoCloseable {
 
     val url: String = "https://localhost:${server.address.port}"
 
-    private class AcceptAnyClient(private val seen: MutableList<X509Certificate>) : X509TrustManager {
+    /** Records client certificates, then checks them against [ca] (validity, chain, client auth). */
+    private class DeviceClients(ca: TestPki.Issuer, private val seen: MutableList<X509Certificate>) : X509TrustManager {
+        private val trust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply {
+            init(KeyStore.getInstance("PKCS12").apply {
+                load(null)
+                setCertificateEntry("device-ca", ca.cert)
+            })
+        }.trustManagers.single() as X509TrustManager
+
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             chain?.firstOrNull()?.let { seen += it }
+            trust.checkClientTrusted(chain, authType)
         }
 
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) =

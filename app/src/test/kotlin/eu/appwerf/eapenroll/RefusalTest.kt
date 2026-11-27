@@ -35,7 +35,7 @@ class RefusalTest {
     /** Enrolled, with a device credential due for renewal and a Wi-Fi certificate that isn't. */
     @Before
     fun enrolled() {
-        val deviceCa = TestPki.root("Device CA")
+        val deviceCa = server.deviceCa
         val alias = keys.create()
         credential = TestPki.leaf(
             deviceCa, "alice", keys.keyPair(alias),
@@ -339,7 +339,7 @@ class RefusalTest {
      */
     private fun pendingConfirmation(wifiNotAfter: Long) {
         val state = store.load()!!
-        val ca = TestPki.root("Device CA")
+        val ca = server.deviceCa
         val current = TestPki.leaf(
             ca, "alice", keys.keyPair(state.deviceAlias),
             notBefore = Date(now - day), notAfter = Date(now + 365 * day),
@@ -463,7 +463,7 @@ class RefusalTest {
     fun expiredDeviceCredentialIsNotStored() {
         server.answer = {
             if (it.path == "device/simplereenroll") {
-                FakeEstServer.issue(it, TestPki.root("Device CA"), "alice", Date(now - 2 * day), Date(now - 1000))
+                FakeEstServer.issue(it, server.deviceCa, "alice", Date(now - 2 * day), Date(now - 1000))
             } else {
                 FakeEstServer.Answer(503, "unavailable\n")
             }

@@ -16,7 +16,7 @@ class LocalStateTest {
     private val store = MemoryStore()
     private val now = System.currentTimeMillis()
     private val day = 86_400_000L
-    private val deviceCa = TestPki.root("Device CA")
+    private val deviceCa = server.deviceCa
     private val wifiCa = TestPki.root("Wi-Fi CA")
     private val link = SetupUri.parse(
         "eapenroll://setup?v=1&url=${server.url}&ca=${server.caFingerprint}&code=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",

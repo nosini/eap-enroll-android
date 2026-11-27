@@ -136,9 +136,9 @@ class EstTlsConnectionTest {
     fun sendsTheCredentialOnlyToTheRightHost() {
         val keys = MemoryKeys()
         val alias = keys.create()
-        val credential = TestPki.leaf(TestPki.root("Device CA"), "alice", keys.keyPair(alias))
         for ((name, works) in listOf("localhost" to true, "other.example.org" to false)) {
             FakeEstServer(hostName = name).use { server ->
+                val credential = TestPki.leaf(server.deviceCa, "alice", keys.keyPair(alias))
                 server.answer = { FakeEstServer.Answer(404) }
                 val client = EstClient(server.url, server.caFingerprint, ClientCredential(keys.keyPair(alias).private, listOf(credential)))
                 val result = runCatching { client.wifiProfile() }
@@ -146,6 +146,29 @@ class EstTlsConnectionTest {
                 // A server whose certificate is for another name never sees the credential.
                 assertEquals(name, if (works) listOf(credential) else emptyList(), server.handshakeClientCertificates.distinct())
                 assertEquals(name, works, server.requests.isNotEmpty())
+            }
+        }
+    }
+
+    /** The fake server, like the real one, refuses a client certificate it can't verify in the handshake. */
+    @Test
+    fun credentialIsCheckedInTheHandshake() {
+        val keys = MemoryKeys()
+        val alias = keys.create()
+        val now = System.currentTimeMillis()
+        val hour = 3_600_000L
+        FakeEstServer().use { server ->
+            server.answer = { FakeEstServer.Answer(404) }
+            for ((label, credential, works) in listOf(
+                Triple("valid", TestPki.leaf(server.deviceCa, "alice", keys.keyPair(alias)), true),
+                Triple("expired", TestPki.leaf(server.deviceCa, "alice", keys.keyPair(alias), Date(now - 2 * hour), Date(now - hour)), false),
+                Triple("other CA", TestPki.leaf(TestPki.root("Fake Device CA"), "alice", keys.keyPair(alias)), false),
+            )) {
+                server.requests.clear()
+                val client = EstClient(server.url, server.caFingerprint, ClientCredential(keys.keyPair(alias).private, listOf(credential)))
+                val result = runCatching { client.wifiProfile() }
+                assertEquals(label, works, result.isSuccess)
+                assertEquals(label, works, server.requests.isNotEmpty())
             }
         }
     }

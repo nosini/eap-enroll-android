@@ -55,9 +55,13 @@ object TestPki {
         Der.set(Der.sequence(Der.oid("2.5.4.3"), Der.utf8String(cn))),
     )
 
+    /** UTCTime for 1950 to 2049, GeneralizedTime otherwise (RFC 5280, 4.1.2.5). */
     private fun time(date: Date): ByteArray {
-        val format = SimpleDateFormat("yyyyMMddHHmmss'Z'").apply { timeZone = TimeZone.getTimeZone("UTC") }
-        return Der.tlv(0x18, format.format(date).toByteArray())
+        val utc = TimeZone.getTimeZone("UTC")
+        val year = java.util.Calendar.getInstance(utc).apply { time = date }.get(java.util.Calendar.YEAR)
+        val (tag, pattern) = if (year in 1950..2049) 0x17 to "yyMMddHHmmss'Z'" else 0x18 to "yyyyMMddHHmmss'Z'"
+        val format = SimpleDateFormat(pattern).apply { timeZone = utc }
+        return Der.tlv(tag, format.format(date).toByteArray())
     }
 
     private fun extension(oid: String, critical: Boolean, value: ByteArray) = Der.sequence(

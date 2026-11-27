@@ -496,6 +496,13 @@ class RefusalTest {
         for ((label, issue) in listOf<Pair<String, (FakeEstServer.Request) -> FakeEstServer.Answer>>(
             "expired" to { FakeEstServer.issue(it, wifiCa, "alice", Date(now - 2 * day), Date(now - 1000)) },
             "no valid period" to { FakeEstServer.issue(it, wifiCa, "alice", Date(now), Date(now - day)) },
+            "expired intermediate" to {
+                val expired = TestPki.intermediate(
+                    wifiCa, "Expired Wi-Fi CA",
+                    notBefore = Date(now - 10 * day), notAfter = Date(now - day),
+                )
+                FakeEstServer.issue(it, expired, "alice", moreChain = listOf(wifiCa.cert))
+            },
             "bad upper link" to { FakeEstServer.issue(it, intermediate, "alice", moreChain = listOf(impostor.cert)) },
             "another key" to { FakeEstServer.certificates(listOf(TestPki.leaf(wifiCa, "alice"), wifiCa.cert)) },
             "CA certificate" to {

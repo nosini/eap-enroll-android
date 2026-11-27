@@ -30,8 +30,17 @@ object TestPki {
         return Issuer(certificate(name, keys, name, keys, ca = true, notBefore = notBefore, notAfter = notAfter), keys)
     }
 
-    fun intermediate(parent: Issuer, name: String, keys: KeyPair = keyPair()): Issuer {
-        return Issuer(certificate(name, keys, parent.cert.subjectCn(), parent.keyPair, ca = true), keys)
+    fun intermediate(
+        parent: Issuer,
+        name: String,
+        keys: KeyPair = keyPair(),
+        notBefore: Date = Date(System.currentTimeMillis() - 3_600_000),
+        notAfter: Date = Date(System.currentTimeMillis() + 86_400_000),
+    ): Issuer {
+        return Issuer(
+            certificate(name, keys, parent.cert.subjectCn(), parent.keyPair, ca = true, notBefore = notBefore, notAfter = notAfter),
+            keys,
+        )
     }
 
     fun leaf(

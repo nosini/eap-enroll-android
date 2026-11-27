@@ -710,9 +710,17 @@ class Enroller(
         Certs.checkChain(chain)
         // Stored, a credential the phone can't use would replace one that
         // works. A start in the future is left alone: the phone's clock may
-        // be a little behind the server's.
-        check(leaf.notBefore.before(leaf.notAfter)) { "The server's certificate has no valid period" }
-        check(clock() < leaf.notAfter.time) { "The server's certificate expired on ${leaf.notAfter}" }
+        // be a little behind the server's. Every certificate counts: a leaf
+        // that is valid now is unusable once an issuer in its chain has
+        // expired.
+        chain.forEach { cert ->
+            check(cert.notBefore.before(cert.notAfter)) {
+                "The server's certificate for ${cert.subjectX500Principal} has no valid period"
+            }
+            check(clock() < cert.notAfter.time) {
+                "The server's certificate for ${cert.subjectX500Principal} expired on ${cert.notAfter}"
+            }
+        }
     }
 
     companion object {

@@ -144,7 +144,8 @@ class PrefsStateStore(context: Context) : StateStore {
     override fun load(): EnrollmentState? {
         val json = prefs.getString(KEY, null) ?: return null
         val state = EnrollmentState.parse(json, wpa3 = settings.getBoolean(NetworkPrefs.WPA3, false))
-        if (!JSONObject(json).has("wpa3")) save(state)
+        // Best effort: if storing fails now, the next load tries again.
+        if (!JSONObject(json).has("wpa3")) runCatching { save(state) }
         return state
     }
 

@@ -269,14 +269,17 @@ class RefusalTest {
     @Test
     fun enabledAgainEvenWhenTheRestOfTheCheckFails() {
         // Device credential due (from @Before); its attestation is refused.
+        // Without a profile (404) the check doesn't get through earlier, so
+        // the refused renewal itself has to prove the account is enabled.
         store.save(store.load()!!.copy(problem = Problem.USER_DISABLED))
         server.answer = {
             when (it.path) {
-                "wifi/profile" -> FakeEstServer.profile(radiusProfile)
+                "wifi/profile" -> FakeEstServer.Answer(404)
                 else -> FakeEstServer.Answer(403, "refused\n", mapOf("Enroll-Error" to "attestation_refused"))
             }
         }
         assertEquals(Enroller.Outcome.LATER, enroller.maintain(byUser = true))
+        assertEquals(listOf("wifi/profile", "device/simplereenroll"), server.requests.map { it.path })
         assertNull(store.load()!!.problem)
 
         // Nothing due; the Wi-Fi renewal asked for fails.

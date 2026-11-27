@@ -43,8 +43,11 @@ object TestPki {
         serverAuth: Boolean = false,
         /** Subject alternative names of a server certificate: host names or IP addresses. */
         altNames: List<String> = listOf(name),
-    ): X509Certificate =
-        certificate(name, keys, parent.cert.subjectCn(), parent.keyPair, false, notBefore, notAfter, serverAuth, altNames)
+        /** The subject's DER, instead of a name with [name] as the CN. */
+        subject: ByteArray? = null,
+    ): X509Certificate = certificate(
+        name, keys, parent.cert.subjectCn(), parent.keyPair, false, notBefore, notAfter, serverAuth, altNames, subject,
+    )
 
     private fun X509Certificate.subjectCn() = Certs.commonName(this)
 
@@ -73,6 +76,7 @@ object TestPki {
         notAfter: Date = Date(System.currentTimeMillis() + 86_400_000),
         serverAuth: Boolean = false,
         altNames: List<String> = emptyList(),
+        subjectName: ByteArray? = null,
     ): X509Certificate {
         val algorithm = Der.sequence(Der.oid("1.2.840.10045.4.3.2"))
         val extensions = ArrayList<ByteArray>()
@@ -101,7 +105,7 @@ object TestPki {
             algorithm,
             name(issuer),
             Der.sequence(time(notBefore), time(notAfter)),
-            name(subject),
+            subjectName ?: name(subject),
             subjectKeys.public.encoded,
             Der.contextConstructed(3, Der.sequence(*extensions.toTypedArray())),
         )

@@ -681,13 +681,34 @@ class NewDeviceKeyException(cause: Exception) :
     GeneralSecurityException("Couldn't make a new device key: ${cause.message}", cause)
 
 object Certs {
-    /** The first CN of the subject, or "" if there is none. */
-    fun commonName(cert: X509Certificate): String =
-        cert.subjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253)
-            .split(',')
-            .map { it.trim() }
-            .firstOrNull { it.startsWith("CN=") }
-            ?.removePrefix("CN=") ?: ""
+    /**
+     * The subject's CN as it is, or "" if there is none (or it isn't
+     * text); the most specific one (the last in the encoding) if there are
+     * several. Read from the DER rather than from a string form of the
+     * name, which escapes characters such as `,` and `+`.
+     */
+    fun commonName(cert: X509Certificate): String {
+        val cn = Der.oid("2.5.4.3")
+        val values = Der.parse(cert.subjectX500Principal.encoded).children()
+            .flatMap { rdn -> rdn.children() }
+            .map { it.children() }
+            .filter { it.size == 2 && it[0].encoded().contentEquals(cn) }
+            .mapNotNull { directoryString(it[1]) }
+        return values.lastOrNull() ?: ""
+    }
+
+    /** The text of a DirectoryString, or null for a type that isn't one. */
+    private fun directoryString(value: Der.Element): String? {
+        val bytes = value.content()
+        return when (value.tag) {
+            0x0c -> String(bytes, Charsets.UTF_8) // UTF8String
+            0x13, 0x16 -> String(bytes, Charsets.US_ASCII) // PrintableString, IA5String
+            0x14 -> String(bytes, Charsets.ISO_8859_1) // TeletexString, as commonly used
+            0x1e -> String(bytes, Charsets.UTF_16BE) // BMPString
+            0x1c -> String(bytes, charset("UTF-32BE")) // UniversalString
+            else -> null
+        }
+    }
 
     /**
      * Checks that each certificate of [chain] is issued and signed by the

@@ -163,6 +163,21 @@ class CertsTest {
     }
 
     @Test
+    fun commonNameAsItIs() {
+        for (name in listOf("alice", "alice+phone@example.org", "Doe, Alice", "a\\b;c\"d<e>", "#hash", " spaced ", "Zoë")) {
+            assertEquals(name, Certs.commonName(TestPki.leaf(ca, name)))
+        }
+        // Not a UTF8String: BMPString and PrintableString.
+        fun cn(tag: Int, value: ByteArray) = Der.set(Der.sequence(Der.oid("2.5.4.3"), Der.tlv(tag, value)))
+        val organization = Der.set(Der.sequence(Der.oid("2.5.4.10"), Der.tlv(0x13, "Example".toByteArray())))
+        val bmp = TestPki.leaf(ca, "x", subject = Der.sequence(cn(0x1e, "Zoë".toByteArray(Charsets.UTF_16BE))))
+        assertEquals("Zoë", Certs.commonName(bmp))
+        val printable = TestPki.leaf(ca, "x", subject = Der.sequence(organization, cn(0x13, "alice".toByteArray())))
+        assertEquals("alice", Certs.commonName(printable))
+        assertEquals("", Certs.commonName(TestPki.leaf(ca, "x", subject = Der.sequence(organization))))
+    }
+
+    @Test
     fun dropsRootsForWifi() {
         val intermediate = TestPki.intermediate(ca, "Test Intermediate")
         val leaf = TestPki.leaf(intermediate, "alice")

@@ -15,6 +15,7 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
+import android.os.PersistableBundle
 import android.os.SystemClock
 import android.provider.Settings
 import java.text.DateFormat
@@ -31,6 +32,14 @@ object Jobs {
     const val DAILY = 1
     const val SOON = 2
     const val AFTER_WAIT = 3
+
+    /** Records a connection through the app's suggestion, without network or waiting. */
+    const val CONNECTION = 4
+
+    const val EXTRA_SSID = "ssid"
+    const val EXTRA_AT = "at"
+    const val EXTRA_ELAPSED = "elapsed"
+    const val EXTRA_BOOT = "boot"
 
     enum class FollowUp {
         NONE,
@@ -100,6 +109,26 @@ object Jobs {
         context.getSystemService(JobScheduler::class.java).schedule(job)
     }
 
+    /**
+     * Hands a connection through the app's suggestion to a job, which reads
+     * the enrollment itself. A broadcast may arrive while a check holds the
+     * enroller's lock, and waiting for it there can time out. Scheduling
+     * the same job ID again replaces one still pending.
+     */
+    fun connectionObserved(context: Context, ssid: String, at: Long, elapsed: Long, boot: Int) {
+        val extras = PersistableBundle().apply {
+            putString(EXTRA_SSID, ssid)
+            putLong(EXTRA_AT, at)
+            putLong(EXTRA_ELAPSED, elapsed)
+            putInt(EXTRA_BOOT, boot)
+        }
+        val job = JobInfo.Builder(CONNECTION, ComponentName(context, RenewJobService::class.java))
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
+            .setExtras(extras)
+            .build()
+        context.getSystemService(JobScheduler::class.java).schedule(job)
+    }
+
     /** Schedules what a check needs next ([followUpFor]); [state] is the state after it. */
     fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?, jobId: Int? = null) {
         when (followUpFor(outcome, jobId)) {
@@ -117,6 +146,16 @@ object Jobs {
 
 class RenewJobService : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
+        if (params.jobId == Jobs.CONNECTION) {
+            Thread {
+                try {
+                    recordConnection(params)
+                } finally {
+                    jobFinished(params, false)
+                }
+            }.start()
+            return true
+        }
         Thread {
             var outcome = Enroller.Outcome.RETRY
             var state: EnrollmentState? = null
@@ -141,6 +180,32 @@ class RenewJobService : JobService() {
         return true
     }
 
+    /**
+     * Records a connection the receiver passed on, if it went through the
+     * stored profile's network and the enrollment isn't stopped. A stopped
+     * enrollment confirms nothing; the confirmation waits for the user.
+     */
+    private fun recordConnection(params: JobParameters) {
+        try {
+            val ssid = params.extras.getString(Jobs.EXTRA_SSID) ?: return
+            val enroller = Enrollment.enroller(this)
+            val state = enroller.state()
+            AppLog.add("Post-connection broadcast for '$ssid'")
+            val connected = state?.profile?.ssid?.takeIf { state.problem == null }
+            if (connected == ssid &&
+                enroller.connectionObserved(
+                    params.extras.getLong(Jobs.EXTRA_AT),
+                    params.extras.getLong(Jobs.EXTRA_ELAPSED),
+                    params.extras.getInt(Jobs.EXTRA_BOOT),
+                )
+            ) {
+                Jobs.runSoon(this, Jobs.AFTER_CONNECTION_DELAY_MS)
+            }
+        } catch (e: Exception) {
+            AppLog.add("Handling the connection broadcast failed: ${Errors.describe(e)}")
+        }
+    }
+
     override fun onStopJob(params: JobParameters): Boolean = true
 }
 
@@ -153,34 +218,19 @@ class RenewJobService : JobService() {
 class ConnectionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != WifiManager.ACTION_WIFI_NETWORK_SUGGESTION_POST_CONNECTION) return
-        val at = System.currentTimeMillis()
-        val elapsed = SystemClock.elapsedRealtime()
-        val boot = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, 0)
         val suggestion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_SUGGESTION, WifiNetworkSuggestion::class.java)
         } else {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_SUGGESTION)
         }
-        val pending = goAsync()
-        Thread {
-            try {
-                val enroller = Enrollment.enroller(context)
-                val state = enroller.state()
-                // A stopped enrollment confirms nothing; the confirmation waits for the user.
-                val ssid = state?.profile?.ssid?.takeIf { state.problem == null }
-                AppLog.add("Post-connection broadcast for '${suggestion?.ssid}'")
-                // getSsid() already unwraps the quotes of a configured SSID,
-                // so an SSID that begins and ends with quotes keeps them.
-                if (ssid != null && suggestion?.ssid == ssid && enroller.connectionObserved(at, elapsed, boot)) {
-                    Jobs.runSoon(context, Jobs.AFTER_CONNECTION_DELAY_MS)
-                }
-            } catch (e: Exception) {
-                AppLog.add("Handling the connection broadcast failed: ${Errors.describe(e)}")
-            } finally {
-                pending.finish()
-            }
-        }.start()
+        // getSsid() already unwraps the quotes of a configured SSID, so an
+        // SSID that begins and ends with quotes keeps them.
+        val ssid = suggestion?.ssid ?: return
+        // Nothing here reads the enrollment: the enroller's lock may be held
+        // by a request, and a receiver that waits can time out.
+        val boot = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, 0)
+        Jobs.connectionObserved(context, ssid, System.currentTimeMillis(), SystemClock.elapsedRealtime(), boot)
     }
 }
 

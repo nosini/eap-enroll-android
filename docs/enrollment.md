@@ -236,9 +236,15 @@ new certificate was installed:
   app may hear it, nothing is confirmed and the older certificates simply
   expire. Turning Wi-Fi off and on (quick settings) with the app open
   confirms within a minute or so, or at once with "Check now".
-- The broadcast only records the connection; the confirmation itself runs
-  as a background job at least 30 seconds later (53 seconds on the test
-  phone; JobScheduler treats the delay as a minimum). Right after Wi-Fi
+- The broadcast itself only reads the suggestion and hands its SSID, wall
+  time, elapsed time and boot count to a one-off job, which doesn't need a
+  network.
+  The job reads the enrollment and records the connection only if it is
+  for the stored network and the enrollment isn't stopped; a broadcast
+  that arrives while a check holds the enroller's lock therefore doesn't
+  make the receiver wait. The confirmation itself runs as a background
+  job at least 30 seconds later (53 seconds on the test phone;
+  JobScheduler treats the delay as a minimum). Right after Wi-Fi
   connects, the network (and an always-on VPN) is still switching over:
   during tests, a confirmation sent at once stalled in its TLS handshake
   until the server gave up after 10 seconds.

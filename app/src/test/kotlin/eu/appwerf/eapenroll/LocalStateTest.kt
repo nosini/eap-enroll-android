@@ -145,6 +145,69 @@ class LocalStateTest {
         assertTrue(after.lastError!!.contains("new setup link"))
     }
 
+    /** Just after a device credential renewal: the previous key is still stored. */
+    private fun renewedJustNow(confirmPending: Boolean = false, wifi: Boolean = true): EnrollmentState {
+        val state = enrolled()
+        val previous = keys.create()
+        val next = state.copy(
+            previousDeviceAlias = previous,
+            profile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert)),
+            confirmPending = confirmPending,
+            wifiChain = if (wifi) state.wifiChain else null,
+        )
+        store.save(next)
+        return next
+    }
+
+    @Test
+    fun profileRetiresThePreviousCredentialButIsNotStored() {
+        val state = renewedJustNow()
+        val changed = WifiProfile("Other Net", "radius.example.org", listOf(TestPki.root("Other RADIUS CA").cert))
+        server.answer = { FakeEstServer.profile(changed) }
+        assertEquals(Enroller.Outcome.OK, enroller().maintain())
+        val after = store.load()!!
+        assertNull(after.previousDeviceAlias)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+        // What Wi-Fi has installed; the next Wi-Fi certificate brings the new profile.
+        assertEquals(state.profile, after.profile)
+    }
+
+    @Test
+    fun withoutProfileAConfirmationRetiresThePreviousCredential() {
+        val state = renewedJustNow()
+        server.answer = { if (it.path == "wifi/profile") FakeEstServer.Answer(404) else FakeEstServer.Answer(204) }
+        assertEquals(Enroller.Outcome.OK, enroller().maintain())
+        assertEquals(listOf("wifi/profile", "wifi/confirm"), server.requests.map { it.path })
+        assertEquals(state.wifiChain!![0].serialNumber.toString(16), String(server.requests[1].body))
+        assertNull(store.load()!!.previousDeviceAlias)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+    }
+
+    @Test
+    fun withoutProfileOrConfirmedCertificateThePreviousCredentialWaits() {
+        val state = renewedJustNow(confirmPending = true)
+        server.answer = { FakeEstServer.Answer(404) }
+        assertEquals(Enroller.Outcome.OK, enroller().maintain())
+        assertEquals(listOf("wifi/profile"), server.requests.map { it.path })
+        assertEquals(state.previousDeviceAlias, store.load()!!.previousDeviceAlias)
+        assertEquals(setOf(state.deviceAlias, state.previousDeviceAlias), keys.keys.keys)
+    }
+
+    @Test
+    fun aWifiCertificateRetiresThePreviousCredential() {
+        val state = renewedJustNow(wifi = false)
+        server.answer = {
+            when (it.path) {
+                "wifi/simpleenroll" -> FakeEstServer.issue(it, wifiCa, "alice")
+                else -> FakeEstServer.Answer(404)
+            }
+        }
+        assertEquals(Enroller.Outcome.OK, enroller().maintain())
+        assertEquals(listOf("wifi/profile", "wifi/profile", "wifi/simpleenroll"), server.requests.map { it.path })
+        assertNull(store.load()!!.previousDeviceAlias)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+    }
+
     @Test
     fun leftoverKeysAreDeleted() {
         val state = enrolled()

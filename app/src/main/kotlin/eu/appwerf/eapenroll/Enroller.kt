@@ -309,12 +309,15 @@ class Enroller(
         try {
             // Before anything else, such as making a key for a renewal that can't work.
             checkNotExpired(state.deviceChain[0])
-            // A disabled account (checked again only because the user asked)
-            // counts as enabled once the server has answered an authenticated
-            // request past its account check. Cleared at once, so a later
-            // failure doesn't bring it back.
+            // The server answered an authenticated request past its account
+            // check. A disabled account (checked again only because the user
+            // asked) then counts as enabled, cleared at once so a later
+            // failure doesn't bring it back. [retired]: the request was made
+            // with the stored credential, so a previous one still waiting to
+            // be retired has been retired by it.
             var accountChecked = state.problem != Problem.USER_DISABLED
-            fun accountEnabled() {
+            fun gotThrough(retired: Boolean = true) {
+                if (retired) state = previousCredentialRetired(state)
                 if (state.problem == Problem.USER_DISABLED) {
                     state = state.copy(problem = null)
                     store.save(state)
@@ -325,7 +328,7 @@ class Enroller(
             // With nothing due, nothing else would be sent at all.
             // wifi/profile is authenticated and checks the account; without a
             // profile on the server (404) it proves nothing.
-            if (!accountChecked && client(state).wifiProfile() != null) accountEnabled()
+            if (!accountChecked && client(state).wifiProfile() != null) gotThrough()
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
             }
@@ -340,10 +343,10 @@ class Enroller(
             if (state.confirmPending && state.connectedAfterInstall) {
                 try {
                     state = confirmWifi(state)
-                    accountEnabled()
+                    gotThrough()
                 } catch (e: EstException) {
                     if (e.status != 400 || e.reason !in SERIAL_NOT_CURRENT) throw e
-                    accountEnabled()
+                    gotThrough()
                     log("Wi-Fi certificate ${state.wifiChain!![0].serialNumber.toString(16)} can't be confirmed; " +
                         "requesting a new one: ${Errors.describe(e)}")
                     wifiNotCurrent = true
@@ -357,11 +360,13 @@ class Enroller(
             if (Certs.renewalDue(state.deviceChain[0], now)) {
                 try {
                     state = renewDeviceCredential(state)
-                    accountEnabled()
+                    // The request was made with the credential that has just
+                    // been replaced; renewDeviceCredential() retires it.
+                    gotThrough(retired = false)
                 } catch (e: Exception) {
                     if (!keepsCurrentCredential(e)) throw e
                     // The server checks the account before the attestation.
-                    if (e is EstException) accountEnabled()
+                    if (e is EstException) gotThrough()
                     log("Device credential renewal failed; keeping the current credential: ${Errors.describe(e)}")
                     deviceRenewalFailure = e
                 }
@@ -369,7 +374,7 @@ class Enroller(
             val wifiChain = state.wifiChain
             if (renewWifi || wifiNotCurrent || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
                 state = renewWifi(state)
-                accountEnabled()
+                gotThrough()
             }
             if (!accountChecked) {
                 log("Nothing showed that the account is enabled again (the server has no Wi-Fi profile)")
@@ -526,14 +531,44 @@ class Enroller(
     }
 
     /**
-     * Uses the new device credential once, which makes the server revoke the
-     * old one, then deletes the old key. Until this has worked, the old
-     * credential stays stored but is never used again.
+     * Uses the new device credential once in a request the server
+     * authenticates, which makes it revoke the old one, then deletes the old
+     * key. Until this has worked, the old credential stays stored but is
+     * never used again.
+     *
+     * That request is `wifi/profile`. A server without a profile answers it
+     * with 404 before authenticating; then the current Wi-Fi certificate is
+     * confirmed again, which is harmless once it is confirmed (a refused
+     * serial counts too: the server authenticated the request). With an
+     * unconfirmed certificate or none, the old credential waits for the
+     * next request that gets through.
+     *
+     * The profile isn't stored here: the state's profile is the one
+     * installed in Wi-Fi, and a changed one comes with the next Wi-Fi
+     * certificate.
      */
     private fun retirePreviousCredential(state: EnrollmentState): EnrollmentState {
-        val profile = client(state).wifiProfile() ?: state.profile
-        state.previousDeviceAlias?.let(keys::delete)
-        val next = state.copy(previousDeviceAlias = null, profile = profile)
+        val client = client(state)
+        if (client.wifiProfile() == null) {
+            val wifi = state.wifiChain?.get(0)
+            if (wifi == null || state.confirmPending) {
+                log("The previous device credential isn't retired yet: the server has no Wi-Fi profile")
+                return state
+            }
+            try {
+                client.confirmWifi(wifi.serialNumber)
+            } catch (e: EstException) {
+                if (e.status != 400 || e.reason !in SERIAL_NOT_CURRENT) throw e
+            }
+        }
+        return previousCredentialRetired(state)
+    }
+
+    /** The server has seen the current device credential since the renewal, so the old one is revoked. */
+    private fun previousCredentialRetired(state: EnrollmentState): EnrollmentState {
+        val previous = state.previousDeviceAlias ?: return state
+        keys.delete(previous)
+        val next = state.copy(previousDeviceAlias = null)
         store.save(next)
         log("Previous device credential retired")
         return next

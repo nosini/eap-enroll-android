@@ -118,7 +118,11 @@ restarts, needs a network) does whatever is due:
 - At 2/3 of the device credential's lifetime: a new Keystore key (attested
   for the current credential) and `device/simplereenroll`. The app stores
   the new credential and then uses it once (`wifi/profile`), which makes
-  the server revoke the old one, and deletes the old key.
+  the server revoke the old one, and deletes the old key. A server
+  without a Wi-Fi profile answers `wifi/profile` with 404 before
+  authenticating, so that doesn't count; the app then confirms the
+  current, already confirmed Wi-Fi certificate again instead. If there is
+  none, the old key stays until a later request gets through.
 - If the renewal fails or its answer is lost, the app keeps the current
   credential, deletes the new key, and the next check renews again with
   the same credential (and another new key). The server retires a
@@ -272,6 +276,13 @@ All met by eap-enroll-server:
 - `wifi/profile` could say whether the network is WPA3-Enterprise only
   (for example `"security": "wpa3-enterprise"` or `"wpa2-enterprise"`).
   Until then the app has a local setting for it.
+- Register `GET wifi/profile` behind `authenticated()` even when no
+  profile is configured, and answer 404 after authenticating. Today the
+  route doesn't exist then, so the 404 comes before authentication: it
+  doesn't retire a superseded device credential, and it can't tell a
+  phone whether its account is enabled again. The app works around it
+  with a repeated `wifi/confirm`, which needs a confirmed Wi-Fi
+  certificate.
 
 ## Phone tests
 

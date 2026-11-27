@@ -12,13 +12,14 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  # Tests and lint run in a job without the signing secrets, so nothing
+  # they execute (tests, Gradle plugins, lint checks) can read the key.
+  check:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      apk: ${{ steps.apk.outputs.file }}
-      artifact: ${{ steps.apk.outputs.artifact }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,6 +50,26 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Test and lint
+        run: ./gradlew :app:testDebugUnitTest :app:lintRelease
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      apk: ${{ steps.apk.outputs.file }}
+      artifact: ${{ steps.apk.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Check signing configuration
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
@@ -64,25 +85,29 @@ jobs:
             exit 1
           fi
 
+      # No Gradle cache here: the check job could have saved one, and
+      # whatever its code wrote there would run next to the key.
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Decode signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
+          umask 077
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
 
-      - name: Test, lint and build the signed release APK
+      # Without the daemon and the configuration cache, nothing keeps the
+      # signing values after this step.
+      - name: Build the signed release APK
         env:
           SIGNING_STORE_FILE: ${{ runner.temp }}/release.jks
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: eapenroll
-        run: ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+        run: ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
 
       - name: Check signature
         env:
@@ -113,7 +138,7 @@ jobs:
       - name: Name the APK
         id: apk
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
           file="eap-enroll-$VERSION.apk"

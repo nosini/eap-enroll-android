@@ -14,7 +14,11 @@ eap-enroll-server.
 
 GitHub Actions builds releases from version tags only; pushes to `main`
 don't build anything. For a `v*` tag it runs the unit tests and lint,
-builds and signs the release APK, and publishes it as a GitHub release.
+then builds and signs the release APK, and publishes it as a GitHub
+release. Tests and lint run in a job of their own that never gets the
+signing secrets; the signing job builds without a Gradle cache, daemon or
+configuration cache, so nothing from the test run or the build keeps the
+key.
 The tag must match `versionName` and be reachable from `main`:
 
     git tag -s v0.2.0 -m "EAP Enroll 0.2.0"

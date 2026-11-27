@@ -10,7 +10,9 @@
 // rate limits don't slow the tests down.
 //
 // With -attestation-roots the server requires Android hardware key
-// attestation for device credentials; only a real phone can pass that.
+// attestation for device credentials; only a real phone can pass that. The
+// harness then also serves the server's attestation revocation list: one
+// made-up entry, so no real attestation key counts as revoked.
 //
 // Control requests:
 //
@@ -105,6 +107,12 @@ func write(dir, name, content string) string {
 	}
 	return p
 }
+
+// stringList is a flag that can be given more than once.
+type stringList []string
+
+func (l *stringList) String() string     { return strings.Join(*l, ",") }
+func (l *stringList) Set(s string) error { *l = append(*l, s); return nil }
 
 func freePort() int {
 	l := must(net.Listen("tcp", "127.0.0.1:0"))
@@ -224,9 +232,16 @@ func main() {
 	publicPort := flag.Int("public-port", 0, "port on 127.0.0.1 for clients (default: any free port)")
 	deviceTTL := flag.String("device-ttl", "8760h", "device credential lifetime (at least 1h; renewal is due at 2/3)")
 	attestationRoots := flag.String("attestation-roots", "", "require Android key attestation, trusting the roots in this PEM file (eap-enroll-server's deploy/attestation-roots.pem)")
+	appPackage := flag.String("app-package", "eu.appwerf.eapenroll", "with -attestation-roots: the app's package name the attestation must name")
+	var appSigningCerts stringList
+	flag.Var(&appSigningCerts, "app-signing-cert", "with -attestation-roots: SHA-256 of the app's signing certificate in hex, colons allowed (repeatable; required)")
 	flag.Parse()
 	if *dir == "" || *bin == "" {
 		flag.Usage()
+		os.Exit(2)
+	}
+	if *attestationRoots != "" && len(appSigningCerts) == 0 {
+		fmt.Fprintln(os.Stderr, "-attestation-roots needs -app-signing-cert (see ../README.md)")
 		os.Exit(2)
 	}
 	d := must(filepath.Abs(*dir))
@@ -260,6 +275,10 @@ func main() {
 	}, baoKey.Public(), nil)
 	baoServer.TLSConfig = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{baoCert.Raw}, PrivateKey: baoKey}}}
 	go func() { log.Fatal(baoServer.ServeTLS(baoListener, "", "")) }()
+	// Trust anchors for the server's own HTTPS clients: the attestation
+	// status list is served under setupCA (eap-enroll reaches OpenBao
+	// through openbao.ca_file).
+	serverEnv := append(os.Environ(), "SSL_CERT_FILE="+write(d, "server-roots.pem", pemCert(setupCA.cert)))
 
 	port := freePort()
 	proxyListener := must(net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *publicPort)))
@@ -290,14 +309,23 @@ func main() {
 		},
 	}
 	if *attestationRoots != "" {
-		// Offline: no revocation status list.
-		cfg["key_attestation"] = map[string]any{"roots_file": must(filepath.Abs(*attestationRoots))}
+		var certs []string
+		for _, c := range appSigningCerts {
+			certs = append(certs, strings.ReplaceAll(c, ":", ""))
+		}
+		cfg["key_attestation"] = map[string]any{
+			"roots_file":        must(filepath.Abs(*attestationRoots)),
+			"status_url":        serveStatusList(setupCA),
+			"app_package":       *appPackage,
+			"app_signing_certs": certs,
+		}
 	}
 	config := write(d, "config.json", string(must(json.MarshalIndent(cfg, "", "  "))))
 
 	serverLog := must(os.Create(filepath.Join(d, "server.log")))
 	server := exec.Command(*bin, "serve", "-config", config)
 	server.Stdout, server.Stderr = serverLog, serverLog
+	server.Env = serverEnv
 	must(0, server.Start())
 	exited := make(chan error, 1)
 	go func() { exited <- server.Wait() }()
@@ -320,13 +348,18 @@ func main() {
 		if i > 100 {
 			log.Fatal("eap-enroll serve didn't start; see server.log")
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case err := <-exited:
+			log.Fatalf("eap-enroll serve exited: %v; see server.log", err)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 
 	run := func(w http.ResponseWriter, args ...string) {
 		var out, errOut bytes.Buffer
 		cmd := exec.Command(*bin, append([]string{args[0], "-config", config}, args[1:]...)...)
 		cmd.Stdout, cmd.Stderr = &out, &errOut
+		cmd.Env = serverEnv
 		if err := cmd.Run(); err != nil {
 			http.Error(w, fmt.Sprintf("%v: %s", err, errOut.String()), 500)
 			return
@@ -366,6 +399,32 @@ func main() {
 	case err := <-exited:
 		log.Fatalf("eap-enroll serve exited: %v; see server.log", err)
 	}
+}
+
+// serveStatusList serves an attestation revocation list in the format of
+// Google's (https://android.googleapis.com/attestation/status) over HTTPS
+// with a certificate from tlsCA, and returns its URL. The server refuses
+// an empty list, so it has one entry with a serial no attestation
+// certificate is expected to have.
+func serveStatusList(tlsCA *ca) string {
+	key := newKey(elliptic.P256())
+	cert := issue(tlsCA, &x509.Certificate{
+		Subject: pkix.Name{CommonName: "attestation status"}, IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:    x509.KeyUsageDigitalSignature, NotAfter: time.Now().Add(30 * 24 * time.Hour),
+	}, key.Public(), nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, map[string]any{"entries": map[string]any{
+			"e2e0000000000000000000000000000000000000": map[string]any{"status": "REVOKED", "reason": "KEY_COMPROMISE"},
+		}})
+	})
+	server := &http.Server{Handler: mux, TLSConfig: &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{cert.Raw}, PrivateKey: key}},
+	}}
+	l := must(net.Listen("tcp", "127.0.0.1:0"))
+	go func() { log.Fatal(server.ServeTLS(l, "", "")) }()
+	return "https://" + l.Addr().String() + "/status"
 }
 
 // proxy forwards connections to target, each from its own loopback address.

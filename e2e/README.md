@@ -32,12 +32,22 @@ For a phone test, run the harness by hand and reach it through
 
 ```sh
 build/e2e/e2e-harness -dir build/e2e/phone -eap-enroll /path/to/eap-enroll \
-  -public-port 8443 [-attestation-roots /path/to/attestation-roots.pem] [-device-ttl 1h]
+  -public-port 8443 [-device-ttl 1h] \
+  [-attestation-roots /path/to/attestation-roots.pem -app-signing-cert SHA256]
 ```
 
 - `-attestation-roots`: the server requires Android key attestation,
   trusting these roots (eap-enroll-server's
-  `deploy/attestation-roots.pem`); no revocation list is fetched.
+  `deploy/attestation-roots.pem`). The harness serves the server's
+  revocation list itself, with one made-up entry, so Google's list isn't
+  fetched and no real attestation key counts as revoked.
+- `-app-signing-cert` (required with `-attestation-roots`, repeatable):
+  the SHA-256 of the certificate the installed APK is signed with, which
+  the attestation must name. For a debug build it's the
+  `Signer #1 certificate SHA-256 digest` from
+  `apksigner verify --print-certs app/build/outputs/apk/debug/app-debug.apk`.
+  `-app-package` (default `eu.appwerf.eapenroll`) is the package name the
+  attestation must name.
 - `-device-ttl`: device credential lifetime (default `8760h`, at least
   `1h`), so a renewal comes due within the test.
 - `POST …/code` (control URL in `build/e2e/phone/control`) runs the

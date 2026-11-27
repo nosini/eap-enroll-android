@@ -167,9 +167,9 @@ class ConnectionReceiver : BroadcastReceiver() {
                 // A stopped enrollment confirms nothing; the confirmation waits for the user.
                 val ssid = state?.profile?.ssid?.takeIf { state.problem == null }
                 Log.i(Enrollment.TAG, "Post-connection broadcast for '${suggestion?.ssid}'")
-                // getSsid() returns the plain SSID; tolerate quotes all the same.
-                val connected = suggestion?.ssid?.removeSurrounding("\"")
-                if (ssid != null && connected == ssid && enroller.connectionObserved(at)) {
+                // getSsid() already unwraps the quotes of a configured SSID,
+                // so an SSID that begins and ends with quotes keeps them.
+                if (ssid != null && suggestion?.ssid == ssid && enroller.connectionObserved(at)) {
                     Jobs.runSoon(context, Jobs.AFTER_CONNECTION_DELAY_MS)
                 }
             } catch (e: Exception) {

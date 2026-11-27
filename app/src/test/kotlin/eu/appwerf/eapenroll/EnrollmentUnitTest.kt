@@ -35,6 +35,24 @@ class SetupUriTest {
     }
 
     @Test
+    fun acceptsThePortsAtTheEdgesOfTheRange() {
+        assertEquals("https://enroll.example.org:1", SetupUri.normalizeServerUrl("https://enroll.example.org:1"))
+        assertEquals("https://enroll.example.org:65535", SetupUri.normalizeServerUrl("https://enroll.example.org:65535"))
+        assertEquals("https://enroll.example.org", SetupUri.normalizeServerUrl("https://enroll.example.org"))
+    }
+
+    @Test
+    fun malformedLinkDoesNotKeepTheCodeInTheCause() {
+        // A space isn't allowed in a URI; URISyntaxException would quote
+        // the whole link, code included.
+        val e = assertThrows(IllegalArgumentException::class.java) {
+            SetupUri.parse("eapenroll://setup?v=1&code=$code&url=https://enroll.example.org/a b")
+        }
+        assertNull(e.cause)
+        assertFalse(e.message!!.contains(code))
+    }
+
+    @Test
     fun rejectsBadLinks() {
         val good = "ca=$ca&code=$code&url=https://enroll.example.org&v=1"
         for (bad in listOf(
@@ -46,6 +64,9 @@ class SetupUriTest {
             "eapenroll://setup?ca=$ca&code=$code&url=http://enroll.example.org&v=1",
             "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org/est&v=1",
             "eapenroll://setup?ca=$ca&code=$code&url=https://user@enroll.example.org&v=1",
+            "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org:0&v=1",
+            "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org:65536&v=1",
+            "eapenroll://setup?ca=$ca&code=$code&url=https://enroll.example.org:99999&v=1",
             "eapenroll://setup?ca=abcd&code=$code&url=https://enroll.example.org&v=1",
             "eapenroll://setup?ca=$ca&code=${code.lowercase()}&url=https://enroll.example.org&v=1",
             "eapenroll://setup?ca=$ca&code=${code}A&url=https://enroll.example.org&v=1",
@@ -148,6 +169,36 @@ class CertsTest {
     }
 
     @Test
+    fun checksEveryLinkOfAChain() {
+        val intermediate = TestPki.intermediate(ca, "Test Intermediate")
+        val leaf = TestPki.leaf(intermediate, "alice")
+        Certs.checkChain(listOf(leaf, intermediate.cert, ca.cert))
+        Certs.checkChain(listOf(leaf))
+        // Same name, other key: the intermediate's signature doesn't verify.
+        val impostor = TestPki.root("Test CA")
+        assertThrows(java.security.SignatureException::class.java) {
+            Certs.checkChain(listOf(leaf, intermediate.cert, impostor.cert))
+        }
+        assertThrows(IllegalStateException::class.java) { Certs.checkChain(listOf(leaf, ca.cert)) }
+        assertThrows(IllegalStateException::class.java) { Certs.checkChain(listOf(leaf, ca.cert, intermediate.cert)) }
+    }
+
+    @Test
+    fun commonNameAsItIs() {
+        for (name in listOf("alice", "alice+phone@example.org", "Doe, Alice", "a\\b;c\"d<e>", "#hash", " spaced ", "Zoë")) {
+            assertEquals(name, Certs.commonName(TestPki.leaf(ca, name)))
+        }
+        // Not a UTF8String: BMPString and PrintableString.
+        fun cn(tag: Int, value: ByteArray) = Der.set(Der.sequence(Der.oid("2.5.4.3"), Der.tlv(tag, value)))
+        val organization = Der.set(Der.sequence(Der.oid("2.5.4.10"), Der.tlv(0x13, "Example".toByteArray())))
+        val bmp = TestPki.leaf(ca, "x", subject = Der.sequence(cn(0x1e, "Zoë".toByteArray(Charsets.UTF_16BE))))
+        assertEquals("Zoë", Certs.commonName(bmp))
+        val printable = TestPki.leaf(ca, "x", subject = Der.sequence(organization, cn(0x13, "alice".toByteArray())))
+        assertEquals("alice", Certs.commonName(printable))
+        assertEquals("", Certs.commonName(TestPki.leaf(ca, "x", subject = Der.sequence(organization))))
+    }
+
+    @Test
     fun dropsRootsForWifi() {
         val intermediate = TestPki.intermediate(ca, "Test Intermediate")
         val leaf = TestPki.leaf(intermediate, "alice")
@@ -171,6 +222,8 @@ class StateJsonTest {
             profile = WifiProfile("Example Net ", "radius.example.org", listOf(root.cert)),
             wifiChain = listOf(wifi, root.cert),
             wifiInstalledAt = 1234,
+            wifiInstalledElapsed = 789,
+            wifiInstalledBoot = 7,
             confirmPending = true,
             connectedAfterInstall = true,
             problem = Problem.USER_DISABLED,
@@ -188,6 +241,21 @@ class StateJsonTest {
     }
 
     @Test
+    fun stateWithoutTheInstallElapsedTimeMeansZero() {
+        val root = TestPki.root("Test Root")
+        val state = EnrollmentState(
+            "https://enroll.example.org", "ab".repeat(32), "device-1", listOf(TestPki.leaf(root, "alice")),
+            wifiInstalledAt = 1234, wifiInstalledElapsed = 789, wifiInstalledBoot = 7,
+        )
+        val json = state.toJson()
+        json.remove("wifi_installed_elapsed")
+        json.remove("wifi_installed_boot")
+        val parsed = EnrollmentState.fromJson(json)
+        assertEquals(0, parsed.wifiInstalledElapsed)
+        assertEquals(0, parsed.wifiInstalledBoot)
+    }
+
+    @Test
     fun profileFromServerJson() {
         val root = TestPki.root("Test Root")
         val json = """{"ssid":" Example Net ","server_domain":"radius.example.org",
@@ -199,5 +267,32 @@ class StateJsonTest {
         val leaf = TestPki.leaf(root, "radius")
         val notCa = json.replace(Base64.getEncoder().encodeToString(root.cert.encoded), Base64.getEncoder().encodeToString(leaf.encoded))
         assertThrows(IllegalArgumentException::class.java) { Profiles.parse(notCa.toByteArray()) }
+    }
+
+    @Test
+    fun profileWithWrongTypesIsRejected() {
+        val ca = "\"${Base64.getEncoder().encodeToString(TestPki.root("Test Root").cert.encoded)}\""
+        fun profile(ssid: String = "\"Example Net\"", domain: String = "\"radius.example.org\"", cas: String = "[$ca]") =
+            """{"ssid":$ssid,"server_domain":$domain,"server_ca_certificates":$cas}"""
+        for (bad in listOf(
+            profile(ssid = "null"),
+            profile(ssid = "12345"),
+            profile(domain = "null"),
+            profile(domain = "true"),
+            profile(cas = "null"),
+            profile(cas = ca),
+            profile(cas = "[null]"),
+            profile(cas = "[42]"),
+            profile(cas = "[\"\"]"),
+            profile(cas = "[\"not base64!\"]"),
+            profile(cas = "[\"${Base64.getEncoder().encodeToString(ByteArray(16) { 1 })}\"]"),
+            """{"ssid":"Example Net","server_domain":"radius.example.org"}""",
+            "<html>Bad Gateway</html>",
+            "[]",
+            "",
+        )) {
+            assertThrows(bad, IllegalArgumentException::class.java) { Profiles.parse(bad.toByteArray()) }
+        }
+        Profiles.parse(profile().toByteArray())
     }
 }

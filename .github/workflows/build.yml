@@ -11,14 +11,22 @@ concurrency:
 permissions:
   contents: read
 
+# The Android SDK packages the build uses, installed explicitly so a change
+# in the runner image can't swap them. BUILD_TOOLS matches buildToolsVersion
+# in app/build.gradle.kts and is also where apksigner comes from.
+env:
+  BUILD_TOOLS: 37.0.0
+  PLATFORM: android-37.2
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  # Tests and lint run in a job without the signing secrets, so nothing
+  # they execute (tests, Gradle plugins, lint checks) can read the key.
+  check:
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     outputs:
-      apk: ${{ steps.apk.outputs.file }}
-      artifact: ${{ steps.apk.outputs.artifact }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,6 +57,34 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17.0.21'
+          cache: gradle
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          # sdkmanager refuses --install without the licenses, which a fresh
+          # image doesn't have yet.
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;$BUILD_TOOLS" "platforms;$PLATFORM"
+
+      - name: Test and lint
+        run: ./gradlew :app:testDebugUnitTest :app:lintRelease
+
+  build:
+    needs: check
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      apk: ${{ steps.apk.outputs.file }}
+      artifact: ${{ steps.apk.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Check signing configuration
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
@@ -64,25 +100,37 @@ jobs:
             exit 1
           fi
 
+      # No Gradle cache here: the check job could have saved one, and
+      # whatever its code wrote there would run next to the key.
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: '17.0.21'
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          # sdkmanager refuses --install without the licenses, which a fresh
+          # image doesn't have yet.
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;$BUILD_TOOLS" "platforms;$PLATFORM"
 
       - name: Decode signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
+          umask 077
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
 
-      - name: Test, lint and build the signed release APK
+      # Without the daemon and the configuration cache, nothing keeps the
+      # signing values after this step.
+      - name: Build the signed release APK
         env:
           SIGNING_STORE_FILE: ${{ runner.temp }}/release.jks
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: eapenroll
-        run: ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+        run: ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
 
       - name: Check signature
         env:
@@ -93,8 +141,7 @@ jobs:
             echo "::error::repository variable SIGNING_CERT_SHA256 is not set"
             exit 1
           fi
-          apksigner="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d \
-            | sort -V | tail -1)/apksigner"
+          apksigner="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner"
           actual="$("$apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk \
             | sed -n -E 's/^.*[Ss]igner.* certificate SHA-256 digest: *([0-9a-fA-F:]+)$/\1/p' \
             | tr -d ':' | tr '[:upper:]' '[:lower:]' | sort -u)"
@@ -113,7 +160,7 @@ jobs:
       - name: Name the APK
         id: apk
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
           file="eap-enroll-$VERSION.apk"
@@ -133,7 +180,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
@@ -150,9 +197,21 @@ jobs:
         run: |
           set -euo pipefail
           file="dist/$APK"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # gh creates a release as a draft, uploads the APK and then
+          # publishes it, so a run that failed on the way can leave a
+          # draft; a re-run finishes that one. A published release keeps
+          # its APK: a re-run must not replace a file already installed.
+          error="$RUNNER_TEMP/gh-release-view.err"
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>"$error"); then
+            if [ "$draft" != "true" ]; then
+              echo "::error::release $TAG is already published; its APK stays as it is"
+              exit 1
+            fi
             gh release upload "$TAG" "$file" --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
-          else
+          elif grep -q 'release not found' "$error"; then
             gh release create "$TAG" "$file" --verify-tag --title "$TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
+          else
+            echo "::error::could not look up release $TAG: $(cat "$error")"
+            exit 1
           fi

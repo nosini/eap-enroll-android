@@ -6,6 +6,7 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.ProviderException
 import java.security.PublicKey
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
@@ -21,20 +22,39 @@ interface DeviceKeys {
      */
     fun create(challenge: ByteArray? = null): String
 
+    /** Throws [MissingDeviceKeyException] if there is no key [alias]. */
     fun keyPair(alias: String): KeyPair
 
     /** The key's attestation chain (DER, leaf first), or null if it has none. */
     fun attestation(alias: String): List<ByteArray>?
 
     fun delete(alias: String)
+
+    /** Deletes the device keys not in [keep], e.g. left over from an interrupted setup or renewal. */
+    fun deleteOthers(keep: Set<String>)
 }
 
-/** Hands a Wi-Fi key and certificate to the system, replacing the previous one. */
+/**
+ * Hands a Wi-Fi key and certificate to the system, replacing the previous
+ * one. Throws [WifiInstallException] if the system won't take it.
+ */
 fun interface WifiInstaller {
-    fun install(profile: WifiProfile, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>)
+    /** [wpa3]: WPA3-Enterprise only, otherwise WPA2/WPA3-Enterprise. */
+    fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>)
+
+    /** Throws [WifiInstallException] if [install] can't work now, e.g. while the user disallows Wi-Fi control. */
+    fun checkAllowed() {}
 }
+
+/**
+ * The phone didn't take a Wi-Fi certificate, or won't now. The server has
+ * issued one when [install] fails, and every new one stays valid until it
+ * expires or a newer one is confirmed, so it isn't retried soon.
+ */
+class WifiInstallException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 interface StateStore {
+    /** Throws [UnreadableStateException] if a stored state can't be read. */
     fun load(): EnrollmentState?
 
     fun save(state: EnrollmentState?)
@@ -63,9 +83,19 @@ data class EnrollmentState(
     /** The device credential before the last renewal; deleted once the new one has been used. */
     val previousDeviceAlias: String? = null,
     val profile: WifiProfile? = null,
+    /** The network is WPA3-Enterprise only; chosen at setup. */
+    val wpa3: Boolean = false,
     /** The certificate in the current network suggestion, issuing CAs after it. */
     val wifiChain: List<X509Certificate>? = null,
     val wifiInstalledAt: Long = 0,
+    /**
+     * [wifiInstalledAt] on the monotonic clock, to tell connections from
+     * before the install apart within a boot; 0 for a state stored before
+     * it was kept.
+     */
+    val wifiInstalledElapsed: Long = 0,
+    /** The boot [wifiInstalledElapsed] belongs to; 0 when unknown. */
+    val wifiInstalledBoot: Int = 0,
     /** The server hasn't been told yet that [wifiChain] works. */
     val confirmPending: Boolean = false,
     /** Wi-Fi connected through the suggestion after [wifiInstalledAt]. */
@@ -84,8 +114,11 @@ data class EnrollmentState(
         put("device_chain", Pem.encodeChain(deviceChain))
         previousDeviceAlias?.let { put("previous_device_alias", it) }
         profile?.let { put("profile", Profiles.toJson(it)) }
+        put("wpa3", wpa3)
         wifiChain?.let { put("wifi_chain", Pem.encodeChain(it)) }
         put("wifi_installed_at", wifiInstalledAt)
+        put("wifi_installed_elapsed", wifiInstalledElapsed)
+        put("wifi_installed_boot", wifiInstalledBoot)
         put("confirm_pending", confirmPending)
         put("connected_after_install", connectedAfterInstall)
         problem?.let { put("problem", it.name) }
@@ -96,15 +129,28 @@ data class EnrollmentState(
     }
 
     companion object {
-        fun fromJson(json: JSONObject) = EnrollmentState(
+        /**
+         * Reads a stored state; throws [UnreadableStateException] if it
+         * can't. [wpa3] is used for a state stored without it.
+         */
+        fun parse(json: String, wpa3: Boolean = false): EnrollmentState = try {
+            fromJson(JSONObject(json), wpa3)
+        } catch (e: Exception) {
+            throw UnreadableStateException(e)
+        }
+
+        fun fromJson(json: JSONObject, wpa3: Boolean = false) = EnrollmentState(
             serverUrl = json.getString("server_url"),
             caFingerprint = json.getString("ca_fingerprint"),
             deviceAlias = json.getString("device_alias"),
             deviceChain = Pem.certificates(json.getString("device_chain").toByteArray()),
             previousDeviceAlias = json.optStringOrNull("previous_device_alias"),
             profile = json.optJSONObject("profile")?.let { Profiles.fromJson(it) },
+            wpa3 = json.optBoolean("wpa3", wpa3),
             wifiChain = json.optStringOrNull("wifi_chain")?.let { Pem.certificates(it.toByteArray()) },
             wifiInstalledAt = json.optLong("wifi_installed_at"),
+            wifiInstalledElapsed = json.optLong("wifi_installed_elapsed"),
+            wifiInstalledBoot = json.optInt("wifi_installed_boot"),
             confirmPending = json.optBoolean("confirm_pending"),
             connectedAfterInstall = json.optBoolean("connected_after_install"),
             problem = json.optStringOrNull("problem")?.let { Problem.valueOf(it) },
@@ -139,6 +185,10 @@ class Enroller(
     private val store: StateStore,
     private val log: (String) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Milliseconds since boot (Android's elapsedRealtime), unaffected by clock changes. */
+    private val elapsedClock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Android's boot count, or 0 when it can't be read. */
+    private val bootCount: () -> Int = { 0 },
 ) {
     enum class Outcome {
         NOT_ENROLLED,
@@ -161,10 +211,11 @@ class Enroller(
 
     /**
      * Enrolls the device with the code from [link], then gets the first
-     * Wi-Fi certificate. Throws if the device credential can't be obtained;
-     * a failure after that is recorded in the state and retried by [maintain].
+     * Wi-Fi certificate, for a WPA3-Enterprise-only network if [wpa3].
+     * Throws if the device credential can't be obtained; a failure after
+     * that is recorded in the state and retried by [maintain].
      */
-    fun setup(link: SetupUri): Outcome = synchronized(LOCK) {
+    fun setup(link: SetupUri, wpa3: Boolean = false): Outcome = synchronized(LOCK) {
         log("Setting up with ${link.serverUrl}")
         closeClient()
         // The server checks attestation against the code as sent in the
@@ -178,17 +229,16 @@ class Enroller(
                 it.enrollDevice(link.code, Csr.create(keyPair, "eap-enroll"), keys.attestation(alias))
             }
             checkIssued(chain, keyPair.public)
+            // Replaces whatever was stored, even a state that can't be read.
+            store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain, wpa3 = wpa3))
             chain
         } catch (e: Exception) {
-            keys.delete(alias)
+            // Best effort: a key that stays is deleted by a later check.
+            runCatching { keys.delete(alias) }
             throw e
         }
-        val old = store.load()
-        store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain))
-        old?.let {
-            if (it.deviceAlias != alias) keys.delete(it.deviceAlias)
-            it.previousDeviceAlias?.let(keys::delete)
-        }
+        // The previous enrollment's keys, and any left over.
+        deleteOtherKeys(setOf(alias))
         log("Device credential for ${Certs.commonName(chain[0])}, valid until ${chain[0].notAfter}")
         try {
             maintainLocked(renewWifi = true, byUser = true)
@@ -206,22 +256,47 @@ class Enroller(
         synchronized(LOCK) {
             try {
                 maintainLocked(renewWifi, byUser)
+            } catch (e: UnreadableStateException) {
+                log(Errors.describe(e))
+                Outcome.STOPPED
             } finally {
                 closeClient()
             }
         }
 
     /**
-     * Records that Wi-Fi connected through this app's suggestion at [at].
-     * Returns true if that proves the current certificate works, so a
-     * [maintain] run should confirm it.
+     * Records that Wi-Fi connected to [ssid] through this app's suggestion
+     * at [at], [elapsed] milliseconds into boot [boot]. Returns true if that
+     * proves the current certificate works, so a [maintain] run should
+     * confirm it.
      */
-    fun connectionObserved(at: Long = clock()): Boolean = synchronized(LOCK) {
+    fun connectionObserved(
+        ssid: String,
+        at: Long = clock(),
+        elapsed: Long = elapsedClock(),
+        boot: Int = bootCount(),
+    ): Boolean = synchronized(LOCK) {
         val state = store.load() ?: return false
+        // A stopped enrollment confirms nothing: the confirmation waits for
+        // the user. Nor does a connection to another network.
+        if (state.problem != null || state.profile?.ssid != ssid) return false
         if (!state.confirmPending || state.connectedAfterInstall) return state.confirmPending
         // A connection made before the new suggestion was installed could
-        // still be reported just after it.
-        if (at < state.wifiInstalledAt + INSTALL_SETTLE_MS) {
+        // still be reported just after it. Within a boot, the monotonic
+        // clock tells when the connection was made; across boots only the
+        // boot count can, since the broadcast carries no elapsed time from
+        // before the reboot. Without either (an old state, or a phone that
+        // won't say), only the wall time remains.
+        val installedElapsed = state.wifiInstalledElapsed
+        val installedBoot = state.wifiInstalledBoot
+        val counted = if (installedElapsed == 0L || installedBoot == 0 || boot == 0) {
+            at >= state.wifiInstalledAt + INSTALL_SETTLE_MS
+        } else if (boot != installedBoot) {
+            boot > installedBoot
+        } else {
+            elapsed >= installedElapsed + INSTALL_SETTLE_MS
+        }
+        if (!counted) {
             log("Connection reported too soon after installing the certificate; not counted")
             return false
         }
@@ -230,13 +305,22 @@ class Enroller(
         true
     }
 
-    /** Deletes the device keys and the stored state. Removing the suggestion is up to the caller. */
+    /**
+     * Deletes the stored state and the device keys, also when the state
+     * can't be read. Removing the suggestion is up to the caller.
+     */
     fun forget() = synchronized(LOCK) {
-        store.load()?.let {
-            keys.delete(it.deviceAlias)
-            it.previousDeviceAlias?.let(keys::delete)
-        }
         store.save(null)
+        keys.deleteOthers(emptySet())
+    }
+
+    /** Best effort: a key that can't be deleted now is deleted by a later check. */
+    private fun deleteOtherKeys(keep: Set<String>) {
+        try {
+            keys.deleteOthers(keep)
+        } catch (e: Exception) {
+            log("Deleting unused device keys failed: ${Errors.describe(e)}")
+        }
     }
 
     /**
@@ -259,45 +343,94 @@ class Enroller(
             log("The server asked for no requests before ${Date(state.waitUntil)}")
             return Outcome.WAIT
         }
+        // Keys of a setup or renewal that was interrupted before its state was stored.
+        deleteOtherKeys(setOfNotNull(state.deviceAlias, state.previousDeviceAlias))
         try {
             // Before anything else, such as making a key for a renewal that can't work.
             checkNotExpired(state.deviceChain[0])
+            // The server answered an authenticated request past its account
+            // check. A disabled account (checked again only because the user
+            // asked) then counts as enabled, cleared at once so a later
+            // failure doesn't bring it back. [retired]: the request was made
+            // with the stored credential, so a previous one still waiting to
+            // be retired has been retired by it.
+            var accountChecked = state.problem != Problem.USER_DISABLED
+            fun gotThrough(retired: Boolean = true) {
+                if (retired) state = previousCredentialRetired(state)
+                if (state.problem == Problem.USER_DISABLED) {
+                    state = state.copy(problem = null)
+                    store.save(state)
+                    log("The account is enabled again")
+                }
+                accountChecked = true
+            }
+            // With nothing due, nothing else would be sent at all.
+            // wifi/profile is authenticated and checks the account; without a
+            // profile on the server (404) it proves nothing.
+            if (!accountChecked && client(state).wifiProfile() != null) gotThrough()
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
+                // Retired only after an authenticated answer: without a
+                // profile the server authenticated the confirmation, so the
+                // account passed its check.
+                if (state.previousDeviceAlias == null) gotThrough(retired = false)
             }
-            // A 400 means the serial isn't a current Wi-Fi certificate of
-            // this phone (expired, revoked or unknown to the server):
-            // confirming it can never work, so it is replaced below. The
+            // A 400 naming the serial means it isn't a current Wi-Fi
+            // certificate of this phone (expired, revoked or unknown to the
+            // server): confirming it can never work, so it is replaced
+            // below. Any other error, a 400 without such a reason
+            // included, is retried like other failures. The
             // confirmation stays pending until that succeeds, so a failed
             // renewal leads here again on the next check.
             var wifiNotCurrent = false
             if (state.confirmPending && state.connectedAfterInstall) {
                 try {
                     state = confirmWifi(state)
+                    gotThrough()
                 } catch (e: EstException) {
-                    if (e.status != 400) throw e
+                    if (e.status != 400 || e.reason !in SERIAL_NOT_CURRENT) throw e
+                    gotThrough()
                     log("Wi-Fi certificate ${state.wifiChain!![0].serialNumber.toString(16)} can't be confirmed; " +
                         "requesting a new one: ${Errors.describe(e)}")
                     wifiNotCurrent = true
                 }
             }
-            // A refused attestation won't change soon, and the current
-            // credential still works: renew Wi-Fi with it all the same.
-            var attestationRefused: EstException? = null
+            // A renewal that fails over the new key's attestation, or over
+            // making the new key, leaves the current credential working:
+            // Wi-Fi is renewed with it all the same (wifi/simpleenroll isn't
+            // attested), and the renewal's failure decides the outcome.
+            var deviceRenewalFailure: Exception? = null
             if (Certs.renewalDue(state.deviceChain[0], now)) {
                 try {
                     state = renewDeviceCredential(state)
-                } catch (e: EstException) {
-                    if (!isAttestationRefused(e)) throw e
-                    log("Device credential renewal refused; keeping the current credential: ${Errors.describe(e)}")
-                    attestationRefused = e
+                    // The request was made with the credential that has just
+                    // been replaced; renewDeviceCredential() retires it.
+                    gotThrough(retired = false)
+                } catch (e: Exception) {
+                    if (!keepsCurrentCredential(e)) throw e
+                    // The server checks the account before the attestation.
+                    if (e is EstException) gotThrough()
+                    log("Device credential renewal failed; keeping the current credential: ${Errors.describe(e)}")
+                    deviceRenewalFailure = e
                 }
             }
             val wifiChain = state.wifiChain
             if (renewWifi || wifiNotCurrent || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
                 state = renewWifi(state)
+                gotThrough()
             }
-            attestationRefused?.let { return refused(state, it) }
+            if (!accountChecked) {
+                log("Nothing showed that the account is enabled again (the server has no Wi-Fi profile)")
+                return Outcome.STOPPED
+            }
+            when (val e = deviceRenewalFailure) {
+                null -> {}
+                is EstException -> return refused(state, e)
+                else -> {
+                    fail(state, e, null)
+                    return Outcome.RETRY
+                }
+            }
             store.save(state.copy(problem = null, waitUntil = 0, lastError = null, lastSuccessAt = clock()))
             return Outcome.OK
         } catch (e: EstException) {
@@ -310,6 +443,15 @@ class Enroller(
         } catch (e: CredentialExpiredException) {
             fail(state, e, Problem.NEEDS_SETUP)
             return Outcome.STOPPED
+        } catch (e: MissingDeviceKeyException) {
+            // Without the key the credential can't be used, nor renewed.
+            fail(state, e, Problem.NEEDS_SETUP)
+            return Outcome.STOPPED
+        } catch (e: WifiInstallException) {
+            // Requesting another certificate soon would most likely fail
+            // the same way and only add another valid, unconfirmed one.
+            fail(state, e, null)
+            return Outcome.LATER
         } catch (e: IOException) {
             fail(state, e, null)
             return Outcome.RETRY
@@ -320,6 +462,10 @@ class Enroller(
             fail(state, e, null)
             return Outcome.RETRY
         } catch (e: IllegalStateException) {
+            fail(state, e, null)
+            return Outcome.RETRY
+        } catch (e: ProviderException) {
+            // The Keystore's errors, e.g. from StrongBox, while signing with a device key.
             fail(state, e, null)
             return Outcome.RETRY
         }
@@ -354,17 +500,39 @@ class Enroller(
             Outcome.STOPPED
         }
         e.status == 429 -> {
-            val seconds = (e.retryAfterSeconds ?: DEFAULT_WAIT_S).coerceIn(1, MAX_WAIT_S)
+            val seconds = (e.retryAfterSeconds?.takeIf { it > 0 } ?: DEFAULT_WAIT_S).coerceAtMost(MAX_WAIT_S)
             fail(state, e, null, waitUntil = clock() + seconds * 1000)
             Outcome.WAIT
         }
-        else -> {
+        // A 5xx or a refused attestation may pass on its own; other
+        // answers, such as 400 bad_csr or 413 body_too_large, mean the
+        // request itself is wrong, so a retry soon would fail the same way.
+        e.status >= 500 || isBadAttestation(e) -> {
             fail(state, e, null)
             Outcome.RETRY
+        }
+        else -> {
+            fail(state, e, null)
+            Outcome.LATER
         }
     }
 
     private fun isAttestationRefused(e: EstException) = e.status == 403 && e.reason == "attestation_refused"
+
+    private fun isBadAttestation(e: EstException) = e.status == 400 && e.reason == "bad_attestation"
+
+    /**
+     * Whether a failed device credential renewal leaves the current
+     * credential usable: the server turned down only the new key's
+     * attestation (refused, missing or unusable, or its status list is
+     * unavailable), or the phone couldn't make the new key.
+     */
+    private fun keepsCurrentCredential(e: Exception): Boolean = when (e) {
+        is NewDeviceKeyException -> true
+        is EstException -> isAttestationRefused(e) || isBadAttestation(e) ||
+            (e.status == 502 && e.reason == "attestation_status_unavailable")
+        else -> false
+    }
 
     private fun isSuperseded(e: EstException) = e.status == 401 && e.reason == "credential_superseded"
 
@@ -414,14 +582,44 @@ class Enroller(
     }
 
     /**
-     * Uses the new device credential once, which makes the server revoke the
-     * old one, then deletes the old key. Until this has worked, the old
-     * credential stays stored but is never used again.
+     * Uses the new device credential once in a request the server
+     * authenticates, which makes it revoke the old one, then deletes the old
+     * key. Until this has worked, the old credential stays stored but is
+     * never used again.
+     *
+     * That request is `wifi/profile`. A server without a profile answers it
+     * with 404 before authenticating; then the current Wi-Fi certificate is
+     * confirmed again, which is harmless once it is confirmed (a refused
+     * serial counts too: the server authenticated the request). With an
+     * unconfirmed certificate or none, the old credential waits for the
+     * next request that gets through.
+     *
+     * The profile isn't stored here: the state's profile is the one
+     * installed in Wi-Fi, and a changed one comes with the next Wi-Fi
+     * certificate.
      */
     private fun retirePreviousCredential(state: EnrollmentState): EnrollmentState {
-        val profile = client(state).wifiProfile() ?: state.profile
-        state.previousDeviceAlias?.let(keys::delete)
-        val next = state.copy(previousDeviceAlias = null, profile = profile)
+        val client = client(state)
+        if (client.wifiProfile() == null) {
+            val wifi = state.wifiChain?.get(0)
+            if (wifi == null || state.confirmPending) {
+                log("The previous device credential isn't retired yet: the server has no Wi-Fi profile")
+                return state
+            }
+            try {
+                client.confirmWifi(wifi.serialNumber)
+            } catch (e: EstException) {
+                if (e.status != 400 || e.reason !in SERIAL_NOT_CURRENT) throw e
+            }
+        }
+        return previousCredentialRetired(state)
+    }
+
+    /** The server has seen the current device credential since the renewal, so the old one is revoked. */
+    private fun previousCredentialRetired(state: EnrollmentState): EnrollmentState {
+        val previous = state.previousDeviceAlias ?: return state
+        keys.delete(previous)
+        val next = state.copy(previousDeviceAlias = null)
         store.save(next)
         log("Previous device credential retired")
         return next
@@ -441,32 +639,54 @@ class Enroller(
         // Always a new key: an attestation challenge is fixed when the key is
         // generated, and the server wants the hash of the credential
         // presented in this request.
-        val alias = keys.create(challenge = sha256(state.deviceChain[0].encoded))
-        val chain = try {
-            val keyPair = keys.keyPair(alias)
+        val alias = newDeviceKey { keys.create(challenge = sha256(state.deviceChain[0].encoded)) }
+        val next = try {
             val identity = Certs.commonName(state.deviceChain[0]).ifEmpty { "eap-enroll" }
-            val chain = client(state).reenrollDevice(Csr.create(keyPair, identity), keys.attestation(alias))
+            val (keyPair, csr, attestation) = newDeviceKey {
+                val keyPair = keys.keyPair(alias)
+                Triple(keyPair, Csr.create(keyPair, identity), keys.attestation(alias))
+            }
+            val chain = client(state).reenrollDevice(csr, attestation)
             checkIssued(chain, keyPair.public)
-            chain
+            // A failed or lost renewal throws above and leaves the current
+            // credential in place: the next check renews again with it, and
+            // the server retires what the lost one issued. Only a credential
+            // from an answer that arrived is ever stored, and it is stored
+            // before the old key goes, so a failed save leaves the old
+            // credential usable. The server issued a credential, so the
+            // account passed its check: a disabled account is enabled again.
+            val next = state.copy(
+                deviceAlias = alias,
+                deviceChain = chain,
+                previousDeviceAlias = state.deviceAlias,
+                problem = if (state.problem == Problem.USER_DISABLED) null else state.problem,
+            )
+            store.save(next)
+            if (state.problem == Problem.USER_DISABLED) log("The account is enabled again")
+            next
         } catch (e: Exception) {
-            keys.delete(alias)
+            // Best effort: a key that stays is deleted by a later check.
+            runCatching { keys.delete(alias) }
             throw e
         }
-        // A failed or lost renewal throws above and leaves the current
-        // credential in place: the next check renews again with it, and the
-        // server retires what the lost one issued. Only a credential from an
-        // answer that arrived is ever stored.
-        state.previousDeviceAlias?.let(keys::delete)
-        val next = state.copy(deviceAlias = alias, deviceChain = chain, previousDeviceAlias = state.deviceAlias)
-        store.save(next)
+        // The state has the new credential; the keys it replaced go now.
+        state.previousDeviceAlias?.let { runCatching { keys.delete(it) } }
         // From here on only the new credential: no connection or TLS session
         // of the old one may be used again.
         closeClient()
-        log("New device credential, valid until ${chain[0].notAfter}")
+        log("New device credential, valid until ${next.deviceChain[0].notAfter}")
         return retirePreviousCredential(next)
     }
 
+    /** Runs a step of making the new device key and its CSR, which happens on the phone only. */
+    private fun <T> newDeviceKey(step: () -> T): T = try {
+        step()
+    } catch (e: Exception) {
+        throw NewDeviceKeyException(e)
+    }
+
     private fun renewWifi(state: EnrollmentState): EnrollmentState {
+        wifi.checkAllowed()
         log("Requesting a Wi-Fi certificate")
         val client = client(state)
         val profile = client.wifiProfile() ?: state.profile
@@ -479,11 +699,19 @@ class Enroller(
         checkIssued(chain, keyPair.public)
         val wifiIdentity = Certs.commonName(chain[0])
         check(wifiIdentity.isNotEmpty()) { "The Wi-Fi certificate has no common name" }
-        wifi.install(profile, wifiIdentity, keyPair.private, Certs.withoutRoots(chain))
+        try {
+            wifi.install(profile, state.wpa3, wifiIdentity, keyPair.private, Certs.withoutRoots(chain))
+        } catch (e: WifiInstallException) {
+            throw e
+        } catch (e: Exception) {
+            throw WifiInstallException("Installing the Wi-Fi certificate failed: ${e.message}", e)
+        }
         val next = state.copy(
             profile = profile,
             wifiChain = chain,
             wifiInstalledAt = clock(),
+            wifiInstalledElapsed = elapsedClock(),
+            wifiInstalledBoot = bootCount(),
             confirmPending = true,
             connectedAfterInstall = false,
         )
@@ -500,7 +728,20 @@ class Enroller(
         }
         check(leaf.basicConstraints == -1) { "The server returned a CA certificate" }
         chain.drop(1).forEach { check(it.basicConstraints >= 0) { "Not a CA certificate: ${it.subjectX500Principal}" } }
-        if (chain.size > 1) leaf.verify(chain[1].publicKey)
+        Certs.checkChain(chain)
+        // Stored, a credential the phone can't use would replace one that
+        // works. A start in the future is left alone: the phone's clock may
+        // be a little behind the server's. Every certificate counts: a leaf
+        // that is valid now is unusable once an issuer in its chain has
+        // expired.
+        chain.forEach { cert ->
+            check(cert.notBefore.before(cert.notAfter)) {
+                "The server's certificate for ${cert.subjectX500Principal} has no valid period"
+            }
+            check(clock() < cert.notAfter.time) {
+                "The server's certificate for ${cert.subjectX500Principal} expired on ${cert.notAfter}"
+            }
+        }
     }
 
     companion object {
@@ -509,9 +750,12 @@ class Enroller(
         /** Connections reported this soon after installing a certificate may predate it. */
         const val INSTALL_SETTLE_MS = 10_000L
 
+        /** `wifi/confirm` reasons for a serial that isn't a current Wi-Fi certificate of this phone. */
+        private val SERIAL_NOT_CURRENT = setOf("expired_serial", "revoked_serial", "unknown_serial")
+
         /** Waits for a 429 without (or with a nonsensical) Retry-After. */
         private const val DEFAULT_WAIT_S = 15 * 60L
-        private const val MAX_WAIT_S = 24 * 3600L
+        internal const val MAX_WAIT_S = 24 * 3600L
 
         private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
@@ -543,7 +787,9 @@ class Enroller(
          */
         fun manualWifiRenewalRefusal(state: EnrollmentState?, now: Long): String? {
             val wifi = state?.wifiChain?.get(0) ?: return null
-            if (state.problem != null || !state.confirmPending || state.connectedAfterInstall) return null
+            // Without a working device credential nothing is requested anyway.
+            if (state.problem == Problem.NEEDS_SETUP || state.problem == Problem.DISABLED) return null
+            if (!state.confirmPending || state.connectedAfterInstall) return null
             if (Certs.renewalDue(wifi, now)) return null
             return "Not requesting a new Wi-Fi certificate: the current one isn't confirmed yet. " +
                 "The server keeps unconfirmed certificates valid and allows only a few per phone. " +
@@ -557,14 +803,59 @@ class Enroller(
 class CredentialExpiredException(val notAfter: Date) :
     GeneralSecurityException("The device credential expired on $notAfter")
 
+/** The stored enrollment state can't be read; a new setup replaces it. */
+class UnreadableStateException(cause: Exception) :
+    IllegalStateException("The stored enrollment can't be read: ${cause.javaClass.simpleName}: ${cause.message}", cause)
+
+/** The device credential's key isn't in the keystore any more. Needs a new setup link. */
+class MissingDeviceKeyException(alias: String) : GeneralSecurityException("Device key $alias is missing")
+
+/** The phone couldn't make a new device key or its CSR (Keystore or StrongBox errors). */
+class NewDeviceKeyException(cause: Exception) :
+    GeneralSecurityException("Couldn't make a new device key: ${cause.message}", cause)
+
 object Certs {
-    /** The first CN of the subject, or "" if there is none. */
-    fun commonName(cert: X509Certificate): String =
-        cert.subjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253)
-            .split(',')
-            .map { it.trim() }
-            .firstOrNull { it.startsWith("CN=") }
-            ?.removePrefix("CN=") ?: ""
+    /**
+     * The subject's CN as it is, or "" if there is none (or it isn't
+     * text); the most specific one (the last in the encoding) if there are
+     * several. Read from the DER rather than from a string form of the
+     * name, which escapes characters such as `,` and `+`.
+     */
+    fun commonName(cert: X509Certificate): String {
+        val cn = Der.oid("2.5.4.3")
+        val values = Der.parse(cert.subjectX500Principal.encoded).children()
+            .flatMap { rdn -> rdn.children() }
+            .map { it.children() }
+            .filter { it.size == 2 && it[0].encoded().contentEquals(cn) }
+            .mapNotNull { directoryString(it[1]) }
+        return values.lastOrNull() ?: ""
+    }
+
+    /** The text of a DirectoryString, or null for a type that isn't one. */
+    private fun directoryString(value: Der.Element): String? {
+        val bytes = value.content()
+        return when (value.tag) {
+            0x0c -> String(bytes, Charsets.UTF_8) // UTF8String
+            0x13, 0x16 -> String(bytes, Charsets.US_ASCII) // PrintableString, IA5String
+            0x14 -> String(bytes, Charsets.ISO_8859_1) // TeletexString, as commonly used
+            0x1e -> String(bytes, Charsets.UTF_16BE) // BMPString
+            0x1c -> String(bytes, charset("UTF-32BE")) // UniversalString
+            else -> null
+        }
+    }
+
+    /**
+     * Checks that each certificate of [chain] is issued and signed by the
+     * next one. Throws [IllegalStateException] or a [GeneralSecurityException].
+     */
+    fun checkChain(chain: List<X509Certificate>) {
+        chain.zipWithNext { cert, issuer ->
+            check(cert.issuerX500Principal == issuer.subjectX500Principal) {
+                "${cert.subjectX500Principal} isn't issued by the next certificate in the chain"
+            }
+            cert.verify(issuer.publicKey)
+        }
+    }
 
     /** Renew at 2/3 of the lifetime. */
     fun renewalDue(cert: X509Certificate, now: Long): Boolean {
@@ -590,7 +881,7 @@ object Errors {
         if (e is EstException) {
             serverHint(e)?.let { return "$text. $it" }
         }
-        if (e is CredentialExpiredException) {
+        if (e is CredentialExpiredException || e is MissingDeviceKeyException || e is UnreadableStateException) {
             return "$text. This phone needs a new setup link."
         }
         // socket() fails with EPERM when the app may not use the network:
@@ -623,7 +914,8 @@ object Errors {
         e.reason == "credential_superseded" ->
             "The server says the connection used a replaced credential; the next check reconnects."
         e.status == 429 -> e.retryAfterSeconds?.let {
-            "The server asks to wait ${(it + 59) / 60} minute(s)."
+            // Clamped like the wait itself, so the hint never exceeds the cap.
+            "The server asks to wait ${(it.coerceIn(1, Enroller.MAX_WAIT_S) + 59) / 60} minute(s)."
         } ?: "The server asks to wait."
         else -> null
     }

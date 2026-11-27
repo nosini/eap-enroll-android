@@ -15,7 +15,9 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
-import android.util.Log
+import android.os.PersistableBundle
+import android.os.SystemClock
+import android.provider.Settings
 import java.text.DateFormat
 import java.util.concurrent.TimeUnit
 
@@ -27,9 +29,49 @@ import java.util.concurrent.TimeUnit
  * asked for is over.
  */
 object Jobs {
-    private const val DAILY = 1
-    private const val SOON = 2
-    private const val AFTER_WAIT = 3
+    const val DAILY = 1
+    const val SOON = 2
+    const val AFTER_WAIT = 3
+
+    /** Records a connection through the app's suggestion, without network or waiting. */
+    const val CONNECTION = 4
+
+    const val EXTRA_SSID = "ssid"
+    const val EXTRA_AT = "at"
+    const val EXTRA_ELAPSED = "elapsed"
+    const val EXTRA_BOOT = "boot"
+
+    enum class FollowUp {
+        NONE,
+
+        /** The one-off run with backoff. */
+        SOON,
+
+        /** The one-off run once the server's wait is over. */
+        AFTER_WAIT,
+
+        /** Nothing until the user acts: every job is cancelled. */
+        CANCEL,
+    }
+
+    /**
+     * What a check that ended with [outcome] needs next. [jobId] is the job
+     * that ran it, or null when the user started it, and [problem] the
+     * state's problem after it. A failed SOON run retries through its own
+     * backoff, and a failed daily run on the next day. A disabled account
+     * is not scheduled for: the background checks stop, so a SOON or
+     * AFTER_WAIT run would do nothing until the user asks again.
+     */
+    fun followUpFor(outcome: Enroller.Outcome, jobId: Int?, problem: Problem? = null): FollowUp = when (outcome) {
+        Enroller.Outcome.STOPPED, Enroller.Outcome.NOT_ENROLLED -> FollowUp.CANCEL
+        Enroller.Outcome.WAIT -> if (problem == Problem.USER_DISABLED) FollowUp.NONE else FollowUp.AFTER_WAIT
+        Enroller.Outcome.RETRY -> when {
+            problem == Problem.USER_DISABLED -> FollowUp.NONE
+            jobId == null || jobId == AFTER_WAIT -> FollowUp.SOON
+            else -> FollowUp.NONE
+        }
+        Enroller.Outcome.OK, Enroller.Outcome.LATER -> FollowUp.NONE
+    }
 
     fun scheduleDaily(context: Context) {
         val scheduler = context.getSystemService(JobScheduler::class.java)
@@ -73,45 +115,116 @@ object Jobs {
         context.getSystemService(JobScheduler::class.java).schedule(job)
     }
 
-    /** What a check started by the user needs next: a retry soon, or a run after the server's wait. */
-    fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?) {
-        when (outcome) {
-            Enroller.Outcome.RETRY -> runSoon(context)
-            Enroller.Outcome.WAIT -> state?.let { runAt(context, it.waitUntil) }
-            else -> {}
+    /**
+     * Hands a connection through the app's suggestion to a job, which reads
+     * the enrollment itself. A broadcast may arrive while a check holds the
+     * enroller's lock, and waiting for it there can time out. Scheduling
+     * the same job ID again replaces one still pending.
+     */
+    fun connectionObserved(context: Context, ssid: String, at: Long, elapsed: Long, boot: Int) {
+        val extras = PersistableBundle().apply {
+            putString(EXTRA_SSID, ssid)
+            putLong(EXTRA_AT, at)
+            putLong(EXTRA_ELAPSED, elapsed)
+            putInt(EXTRA_BOOT, boot)
+        }
+        val job = JobInfo.Builder(CONNECTION, ComponentName(context, RenewJobService::class.java))
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
+            .setExtras(extras)
+            .build()
+        context.getSystemService(JobScheduler::class.java).schedule(job)
+    }
+
+    /**
+     * Whether a check that ended with [outcome] should make sure the daily
+     * job is scheduled: there is an enrollment ([state], read after the
+     * check), it is in use and has no problem. A check that failed before
+     * the state could be read schedules nothing.
+     */
+    fun dailyNeeded(outcome: Enroller.Outcome, state: EnrollmentState?): Boolean =
+        state != null && state.problem == null &&
+            outcome != Enroller.Outcome.STOPPED && outcome != Enroller.Outcome.NOT_ENROLLED
+
+    /** Schedules what a check needs next ([followUpFor]); [state] is the state after it. */
+    fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?, jobId: Int? = null) {
+        val problem = state?.problem
+        // A check that got through schedules the daily job again, e.g. after
+        // a disabled account was cleared while no activity was open to
+        // refresh the screen.
+        if (dailyNeeded(outcome, state)) scheduleDaily(context)
+        when (followUpFor(outcome, jobId, problem)) {
+            FollowUp.NONE -> {}
+            FollowUp.SOON -> runSoon(context)
+            FollowUp.AFTER_WAIT -> state?.let { runAt(context, it.waitUntil) }
+            FollowUp.CANCEL -> cancelAll(context)
         }
     }
 
     fun cancelAll(context: Context) {
         context.getSystemService(JobScheduler::class.java).cancelAll()
     }
-
-    /** Whether [params] is the one-off run, which retries with backoff. */
-    fun isSoon(params: JobParameters) = params.jobId == SOON
 }
 
 class RenewJobService : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
-        Thread {
-            val enroller = Enrollment.enroller(this)
-            val outcome = try {
-                enroller.maintain()
-            } catch (e: Exception) {
-                Log.w(Enrollment.TAG, "Background renewal failed", e)
-                Enroller.Outcome.RETRY
-            }
-            Log.i(Enrollment.TAG, "Background check: $outcome")
-            if (outcome == Enroller.Outcome.WAIT) {
+        if (params.jobId == Jobs.CONNECTION) {
+            Thread {
                 try {
-                    enroller.state()?.let { Jobs.runAt(this, it.waitUntil) }
-                } catch (e: Exception) {
-                    Log.w(Enrollment.TAG, "Scheduling the check after the wait failed", e)
+                    recordConnection(params)
+                } finally {
+                    jobFinished(params, false)
                 }
+            }.start()
+            return true
+        }
+        Thread {
+            var outcome = Enroller.Outcome.RETRY
+            var state: EnrollmentState? = null
+            try {
+                try {
+                    val enroller = Enrollment.enroller(this)
+                    outcome = enroller.maintain()
+                    AppLog.add("Background check: $outcome")
+                    state = runCatching { enroller.state() }.getOrNull()
+                    Notifier.update(this)
+                } catch (e: Exception) {
+                    AppLog.add("Background renewal failed: ${Errors.describe(e)}")
+                }
+                // Before jobFinished(), which releases the wake lock: the
+                // process may be frozen or killed right after it. Cancelling
+                // all jobs here stops this one too, and a cancelled job isn't
+                // rescheduled whatever onStopJob() answers.
+                try {
+                    Jobs.followUp(this, outcome, state, params.jobId)
+                } catch (e: Exception) {
+                    AppLog.add("Scheduling the next check failed: ${Errors.describe(e)}")
+                }
+            } finally {
+                jobFinished(params, outcome == Enroller.Outcome.RETRY && params.jobId == Jobs.SOON)
             }
-            Notifier.update(this)
-            jobFinished(params, outcome == Enroller.Outcome.RETRY && Jobs.isSoon(params))
         }.start()
         return true
+    }
+
+    /**
+     * Hands a connection the receiver passed on to the enroller, which
+     * records it if it went through the stored profile's network and the
+     * enrollment isn't stopped.
+     */
+    private fun recordConnection(params: JobParameters) {
+        try {
+            val ssid = params.extras.getString(Jobs.EXTRA_SSID) ?: return
+            AppLog.add("Post-connection broadcast for '$ssid'")
+            val connected = Enrollment.enroller(this).connectionObserved(
+                ssid,
+                params.extras.getLong(Jobs.EXTRA_AT),
+                params.extras.getLong(Jobs.EXTRA_ELAPSED),
+                params.extras.getInt(Jobs.EXTRA_BOOT),
+            )
+            if (connected) Jobs.runSoon(this, Jobs.AFTER_CONNECTION_DELAY_MS)
+        } catch (e: Exception) {
+            AppLog.add("Handling the connection broadcast failed: ${Errors.describe(e)}")
+        }
     }
 
     override fun onStopJob(params: JobParameters): Boolean = true
@@ -126,30 +239,19 @@ class RenewJobService : JobService() {
 class ConnectionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != WifiManager.ACTION_WIFI_NETWORK_SUGGESTION_POST_CONNECTION) return
-        val at = System.currentTimeMillis()
         val suggestion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_SUGGESTION, WifiNetworkSuggestion::class.java)
         } else {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_SUGGESTION)
         }
-        val pending = goAsync()
-        Thread {
-            try {
-                val enroller = Enrollment.enroller(context)
-                val ssid = enroller.state()?.profile?.ssid
-                Log.i(Enrollment.TAG, "Post-connection broadcast for '${suggestion?.ssid}'")
-                // getSsid() returns the plain SSID; tolerate quotes all the same.
-                val connected = suggestion?.ssid?.removeSurrounding("\"")
-                if (ssid != null && connected == ssid && enroller.connectionObserved(at)) {
-                    Jobs.runSoon(context, Jobs.AFTER_CONNECTION_DELAY_MS)
-                }
-            } catch (e: Exception) {
-                Log.w(Enrollment.TAG, "Handling the connection broadcast failed", e)
-            } finally {
-                pending.finish()
-            }
-        }.start()
+        // getSsid() already unwraps the quotes of a configured SSID, so an
+        // SSID that begins and ends with quotes keeps them.
+        val ssid = suggestion?.ssid ?: return
+        // Nothing here reads the enrollment: the enroller's lock may be held
+        // by a request, and a receiver that waits can time out.
+        val boot = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, 0)
+        Jobs.connectionObserved(context, ssid, System.currentTimeMillis(), SystemClock.elapsedRealtime(), boot)
     }
 }
 
@@ -158,9 +260,22 @@ object Notifier {
     private const val CHANNEL = "renewal"
     private const val ID = 1
 
+    /** Never throws: a failure to read the state or notify is only logged. */
     fun update(context: Context) {
+        try {
+            show(context)
+        } catch (e: Exception) {
+            AppLog.add("Updating the notification failed: ${Errors.describe(e)}")
+        }
+    }
+
+    private fun show(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        val text = attentionText(Enrollment.enroller(context).state(), System.currentTimeMillis())
+        val text = try {
+            attentionText(Enrollment.enroller(context).state(), System.currentTimeMillis())
+        } catch (e: UnreadableStateException) {
+            UNREADABLE
+        }
         if (text == null) {
             manager.cancel(ID)
             return
@@ -180,10 +295,14 @@ object Notifier {
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .build()
         // Without the notification permission (Android 13+) this is dropped silently.
         manager.notify(ID, notification)
     }
+
+    const val UNREADABLE = "The app can't read its stored enrollment, so it can't renew the Wi-Fi certificate. " +
+        "Set the phone up again with a new link."
 
     /** What needs the user's attention, or null. */
     fun attentionText(state: EnrollmentState?, now: Long): String? {

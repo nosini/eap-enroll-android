@@ -1,11 +1,16 @@
 package eu.appwerf.eapenroll
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -38,6 +43,9 @@ class ManualSetupActivity : Activity() {
     private lateinit var certSummary: TextView
     private lateinit var messageView: TextView
 
+    /** A remove-networks dialog is being prepared or shown; further taps wait. */
+    private var removeSuggestionsPending = false
+
     private val caFile get() = File(filesDir, "ca.pem")
     private val csrFile get() = File(noBackupFilesDir, "csr.pem")
     private val chainFile get() = File(noBackupFilesDir, "chain.pem")
@@ -69,7 +77,9 @@ class ManualSetupActivity : Activity() {
         click(R.id.copy_csr) { Ui.copy(this, "CSR", csrText()); show(getString(R.string.copied)) }
         click(R.id.import_cert) { openDocument(REQUEST_CERT) }
         click(R.id.paste_cert) {
-            importCertificate((Ui.clipboardText(this) ?: error(getString(R.string.clipboard_empty))).toByteArray())
+            val text = Ui.clipboardText(this) ?: error(getString(R.string.clipboard_empty))
+            check(text.length <= MAX_IMPORT_BYTES) { "The clipboard holds more than a certificate chain" }
+            importCertificate(text.toByteArray())
         }
         click(R.id.add_suggestion) { addSuggestion() }
         click(R.id.save_settings_network) { saveThroughSettings() }
@@ -150,10 +160,13 @@ class ManualSetupActivity : Activity() {
         } else {
             getString(R.string.no_ca)
         }
-        keySummary.text = if (vault.hasKey()) {
-            getString(R.string.key_stored, fingerprint(vault.publicKeyEncoded()!!))
-        } else {
-            getString(R.string.no_key)
+        // A stored key file that can't be read has no public key: say so
+        // instead of failing here, so the user can still delete it.
+        val publicKey = vault.publicKeyEncoded()
+        keySummary.text = when {
+            publicKey != null -> getString(R.string.key_stored, fingerprint(publicKey))
+            vault.hasKey() -> getString(R.string.key_unreadable)
+            else -> getString(R.string.no_key)
         }
         certSummary.text = if (chainFile.exists()) {
             runCatching { Pem.certificates(chainFile.readBytes()).joinToString("\n\n") { describe(it) } }
@@ -170,9 +183,11 @@ class ManualSetupActivity : Activity() {
         val identity = prefs.getString("identity", "")!!
         check(identity.isNotEmpty()) { "Enter the username (EAP identity) first" }
         val replacing = vault.hasKey()
-        chainFile.delete()
         val curve = prefs.getString("curve", CURVE_P384)!!
+        // Replaces the stored key only once the new one is stored.
         val keyPair = vault.generate(curve)
+        // The certificate was for the previous key.
+        chainFile.delete()
         csrFile.writeText(Pem.encode("CERTIFICATE REQUEST", Csr.create(keyPair, identity)))
         val wrap = if (vault.lastWrapKeyInStrongBox == true) "StrongBox" else "TEE/software keystore"
         show(
@@ -240,11 +255,9 @@ class ManualSetupActivity : Activity() {
         }
     }
 
-    private fun readUri(uri: Uri): ByteArray {
-        val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-        check(bytes.size <= MAX_IMPORT_BYTES) { "File is too large" }
-        return bytes
-    }
+    /** Stops reading past [MAX_IMPORT_BYTES]: the picker offers any file, however large. */
+    private fun readUri(uri: Uri): ByteArray =
+        contentResolver.openInputStream(uri)!!.use { Streams.readLimited(it, MAX_IMPORT_BYTES, "The file") }
 
     private fun importCa(data: ByteArray) {
         val certs = Pem.certificates(data)
@@ -265,6 +278,7 @@ class ManualSetupActivity : Activity() {
         chain.drop(1).forEach {
             check(it.basicConstraints >= 0) { "Not a CA certificate: ${it.subjectX500Principal}" }
         }
+        Certs.checkChain(chain)
         val warnings = ArrayList<String>()
         val identity = prefs.getString("identity", "")!!
         val cn = Certs.commonName(leaf)
@@ -283,7 +297,8 @@ class ManualSetupActivity : Activity() {
         check(chainFile.exists()) { "Import the signed certificate first" }
         val settings = networkSettings()
         val keyPair = vault.load()
-        val chain = Pem.certificates(chainFile.readBytes())
+        // Wi-Fi takes at most five certificates; the root isn't needed.
+        val chain = Certs.withoutRoots(Pem.certificates(chainFile.readBytes()))
         AppLog.add("Network: SSID '${settings.ssid}' (${settings.ssid.length} characters), identity '${settings.identity}', " +
             "domain '${settings.serverDomain}', ${if (settings.wpa3) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"}, " +
             "${settings.caCertificates.size} CA certificate(s), client chain of ${chain.size}")
@@ -302,13 +317,36 @@ class ManualSetupActivity : Activity() {
         }
     }
 
+    /**
+     * Hands the network to Settings. The suggestion carries the private key
+     * in the clear, and any app can claim this action, so it goes only to a
+     * system app, named explicitly.
+     */
     private fun saveThroughSettings() {
+        val action = Intent(Settings.ACTION_WIFI_ADD_NETWORKS)
+        val handler = systemActivityFor(action)
+            ?: throw IllegalStateException("No system app on this phone adds Wi-Fi networks this way")
         val suggestion = buildSuggestion()
-        val intent = Intent(Settings.ACTION_WIFI_ADD_NETWORKS).apply {
+        val intent = action.apply {
+            component = handler
             putParcelableArrayListExtra(Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(suggestion))
         }
         @Suppress("DEPRECATION")
         startActivityForResult(intent, REQUEST_ADD_NETWORKS)
+    }
+
+    /** The system activity for [intent], Settings if there are several. */
+    private fun systemActivityFor(intent: Intent): ComponentName? {
+        val flags = (PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY).toLong()
+        val handlers = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(flags))
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentActivities(intent, flags.toInt())
+        }.map { it.activityInfo }
+            .filter { it.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0 }
+        val chosen = handlers.firstOrNull { it.packageName == SETTINGS_PACKAGE } ?: handlers.firstOrNull()
+        return chosen?.let { ComponentName(it.packageName, it.name) }
     }
 
     private fun listSuggestions() {
@@ -318,8 +356,45 @@ class ManualSetupActivity : Activity() {
     }
 
     private fun removeSuggestions() {
-        val status = wifi.removeNetworkSuggestions(emptyList())
-        show("Removed this app's networks: ${WifiSetup.statusName(status)}")
+        if (removeSuggestionsPending) return
+        removeSuggestionsPending = true
+        val app = applicationContext
+        // state() may wait for a request that holds the enroller's lock.
+        Thread {
+            // A state that can't be read still means an enrollment: the
+            // automatic network's suggestion may be there, so warn that it
+            // is removed too.
+            val enrolled = try {
+                Enrollment.enroller(app).state() != null
+            } catch (e: Exception) {
+                AppLog.add("Reading the enrollment failed: ${Errors.describe(e)}")
+                true
+            }
+            runOnUiThread {
+                // The activity may be gone by now (Back, rotation); showing
+                // a dialog on it would throw.
+                if (isFinishing || isDestroyed) {
+                    removeSuggestionsPending = false
+                } else {
+                    confirmRemoveSuggestions(enrolled)
+                }
+            }
+        }.start()
+    }
+
+    private fun confirmRemoveSuggestions(enrolled: Boolean) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.remove_networks_title)
+            .setMessage(if (enrolled) R.string.remove_networks_enrolled_text else R.string.remove_networks_text)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.remove) { _, _ ->
+                attempt {
+                    val status = wifi.removeNetworkSuggestions(emptyList())
+                    show("Removed this app's networks: ${WifiSetup.statusName(status)}")
+                }
+            }
+            .setOnDismissListener { removeSuggestionsPending = false }
+            .show()
     }
 
     private fun deleteKey() {
@@ -349,5 +424,6 @@ class ManualSetupActivity : Activity() {
         const val REQUEST_SAVE_CSR = 3
         const val REQUEST_ADD_NETWORKS = 4
         const val MAX_IMPORT_BYTES = 64 * 1024
+        const val SETTINGS_PACKAGE = "com.android.settings"
     }
 }

@@ -51,7 +51,8 @@ Releases are signed with this certificate (check with
    with it filled in. Otherwise copy the link, open EAP Enroll and tap
    **Paste link**.
 3. If the network is WPA3-Enterprise only, turn on **WPA3-Enterprise only
-   network**. The server doesn't tell the app this.
+   network**. The server doesn't tell the app this. The choice stays with
+   the enrollment; changing it takes a new setup.
 4. Tap **Set up**. The app gets its device credential, the network's
    settings and the first Wi-Fi certificate, and adds the network to Wi-Fi.
 5. Android asks whether to allow the suggested network. Allow it. The phone
@@ -87,7 +88,8 @@ phone.
 - **Remove enrollment** (in the menu) deletes the app's keys and
   certificates and removes the network from Wi-Fi. It doesn't revoke
   anything on the server; ask the administrator to disable the device.
-- **Activity log** (in the menu) shows what the app did, for bug reports.
+- **Activity log** (in the menu) shows what the app did, including
+  background checks and connection handling, for bug reports.
 
 ## Permissions
 
@@ -99,6 +101,11 @@ phone.
 | Location, "all the time" (optional) | Android only tells an app that a connection through its network worked if the app may read Wi-Fi scan results, which needs location. With "only while using the app", renewals are confirmed only while the app is open. Without it, they're not confirmed at all. |
 | Notifications (optional) | Warnings about failing renewals. |
 | Run at startup | Keeping the daily check scheduled after a restart. |
+
+The first denial of a permission, or cancelling its prompt, only leaves the
+card in place: Android would ask again. Once Android won't ask any more,
+because the permission was denied for good, tapping its card opens the
+app's settings.
 
 ## Manual setup
 
@@ -126,7 +133,8 @@ Manual certificates aren't renewed; repeat the steps before they expire.
   or exclude EAP Enroll from the VPN.
 - **Setup or renewal times out.** On Android 17, an enrollment server on
   the local network needs the **Nearby devices** permission. Allow it in
-  the app's settings, or tap **Allow nearby devices** on the main screen.
+  the app's settings; tapping **Allow nearby devices** on the main screen
+  opens them if Android won't ask any more.
 - **The camera shows the link but doesn't open the app.** Some camera
   apps, including GrapheneOS Camera, don't open `eapenroll://` links. Paste
   the link instead.

@@ -30,6 +30,7 @@
 
     <!-- Status -->
     <string name="status_working">Working…</string>
+    <string name="status_unreadable_title">Enrollment data unreadable</string>
     <string name="status_ok_title">Wi-Fi is set up</string>
     <string name="status_ok_text">Network %1$s. The certificate renews automatically from %2$s.</string>
     <string name="status_unconfirmed_title">Certificate not confirmed yet</string>
@@ -54,8 +55,9 @@
     <string name="result_set_up">Set up. If Android asks whether to allow the suggested network, allow it.</string>
     <string name="result_renewed">New Wi-Fi certificate installed. It\'s used from the next connection.</string>
     <string name="result_up_to_date">Everything is up to date.</string>
-    <string name="result_retry">The server couldn\'t be reached; the app tries again soon.</string>
-    <string name="result_later">The server refused the request; the daily check tries again.</string>
+    <string name="result_retry">The check failed; the app tries again soon.</string>
+    <string name="result_later">That didn\'t work this time; the daily check tries again.</string>
+    <string name="result_user_disabled_try_again">The account may still be disabled; the check didn\'t get through to the server. Tap Check now to try again.</string>
     <string name="result_wait">The server asked to wait until %1$s.</string>
     <string name="result_failed">Failed: %1$s</string>
 
@@ -75,6 +77,7 @@
     <string name="task_notifications_title">Get renewal warnings</string>
     <string name="task_notifications_text">The app warns when a certificate is close to expiring and renewing it failed.</string>
     <string name="task_notifications_action">Allow notifications</string>
+    <string name="permission_settings_hint">Not allowed. Allow it in the app\'s settings.</string>
 
     <!-- Details -->
     <string name="details">Details</string>
@@ -132,6 +135,7 @@
     <string name="save">Save</string>
     <string name="no_key">No key yet.</string>
     <string name="key_stored">Key stored (encrypted). Public key SHA-256 %1$s…</string>
+    <string name="key_unreadable">Key file unreadable; delete it and generate a new key.</string>
     <string name="manual_certificate">Signed certificate</string>
     <string name="import_file">Import file</string>
     <string name="paste">Paste</string>
@@ -142,6 +146,9 @@
     <string name="save_through_settings">Save through Settings</string>
     <string name="list_suggestions">List networks</string>
     <string name="remove_suggestions">Remove networks</string>
+    <string name="remove_networks_title">Remove networks?</string>
+    <string name="remove_networks_text">This removes the Wi-Fi networks this app added as suggestions.</string>
+    <string name="remove_networks_enrolled_text">An automatic enrollment is set up: this removes its Wi-Fi network too. The app adds it again with the next renewal.</string>
     <string name="manual_cleanup">Clean up</string>
     <string name="manual_cleanup_text">Once the phone has connected, delete the app\'s copy of the key. Wi-Fi keeps its own.</string>
     <string name="delete_key">Delete key and certificate</string>

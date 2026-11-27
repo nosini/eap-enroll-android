@@ -27,7 +27,9 @@ class SetupUri private constructor(
             val uri = try {
                 URI(text.trim())
             } catch (e: URISyntaxException) {
-                throw IllegalArgumentException("Not a setup link", e)
+                // Without the cause: its message quotes the whole link,
+                // including the one-time code.
+                throw IllegalArgumentException("Not a setup link")
             }
             require(uri.scheme.equals("eapenroll", ignoreCase = true) &&
                 uri.rawAuthority.equals("setup", ignoreCase = true) &&
@@ -66,6 +68,9 @@ class SetupUri private constructor(
                 (uri.rawPath.isNullOrEmpty() || uri.rawPath == "/") &&
                 uri.rawQuery == null && uri.rawFragment == null
             ) { "The server URL must be https://host[:port]" }
+            // Java's URI takes any non-negative int as the port; an
+            // impossible one would fail only once the key has been made.
+            require(uri.port == -1 || uri.port in 1..65535) { "Invalid port in server URL" }
             val port = if (uri.port == -1) "" else ":${uri.port}"
             return "https://${uri.host.lowercase()}$port"
         }

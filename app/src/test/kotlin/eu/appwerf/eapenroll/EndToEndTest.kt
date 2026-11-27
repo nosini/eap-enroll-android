@@ -60,17 +60,6 @@ class EndToEndTest {
     private fun deviceId(cert: X509Certificate): String =
         cert.subjectAlternativeNames.first { it[0] == 6 }[1].toString().removePrefix("urn:uuid:")
 
-    /**
-     * Whether the server names the reason for a refusal in `Enroll-Error`.
-     * Servers before that answer 403 without it, which the app treats as a
-     * disabled device.
-     */
-    private fun sendsReasons(link: SetupUri): Boolean {
-        val e = assertThrows(EstException::class.java) { EstClient(link.serverUrl, link.caFingerprint).wifiProfile() }
-        assertEquals(401, e.status)
-        return e.reason != null
-    }
-
     @Test
     fun lifecycle() {
         val link = code()
@@ -98,8 +87,18 @@ class EndToEndTest {
         assertEquals(1, wifi.installs.size)
 
         // A connection right after installing may predate it.
-        assertFalse(enroller.connectionObserved(state.wifiInstalledAt + 1_000))
-        assertTrue(enroller.connectionObserved(state.wifiInstalledAt + 60_000))
+        assertFalse(
+            enroller.connectionObserved(
+                state.profile!!.ssid,
+                state.wifiInstalledAt + 1_000, state.wifiInstalledElapsed + 1_000, state.wifiInstalledBoot,
+            ),
+        )
+        assertTrue(
+            enroller.connectionObserved(
+                state.profile!!.ssid,
+                state.wifiInstalledAt + 60_000, state.wifiInstalledElapsed + 60_000, state.wifiInstalledBoot,
+            ),
+        )
         assertEquals(Enroller.Outcome.OK, enroller.maintain())
         assertFalse(store.load()!!.confirmPending)
         assertFalse(firstSerial in revoked("pki-radius"))
@@ -110,7 +109,11 @@ class EndToEndTest {
         assertEquals(2, wifi.installs.size)
         state = store.load()!!
         assertNotEquals(firstSerial, state.wifiChain!![0].serialNumber)
-        assertTrue(enroller.connectionObserved(now + 60_000))
+        assertTrue(
+            enroller.connectionObserved(
+                state.profile!!.ssid, now + 60_000, state.wifiInstalledElapsed + 60_000, state.wifiInstalledBoot,
+            ),
+        )
         assertEquals(Enroller.Outcome.OK, enroller.maintain())
         assertTrue(firstSerial in revoked("pki-radius"))
 
@@ -137,7 +140,7 @@ class EndToEndTest {
         call("POST", "/disable?device=${deviceId(state.deviceChain[0])}")
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(renewWifi = true))
         state = store.load()!!
-        assertTrue(state.problem != null)
+        assertEquals(Problem.DISABLED, state.problem)
         println("After disable: ${state.problem}, ${state.lastError}")
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain())
         assertEquals(3, wifi.installs.size)
@@ -162,7 +165,7 @@ class EndToEndTest {
             EstClient(link.serverUrl, link.caFingerprint, oldCredential).wifiProfile()
         }
         assertEquals(403, e.status)
-        if (sendsReasons(link)) assertEquals("credential_reuse", e.reason)
+        assertEquals("credential_reuse", e.reason)
 
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(renewWifi = true))
         assertEquals(Problem.DISABLED, store.load()!!.problem)
@@ -173,15 +176,18 @@ class EndToEndTest {
     fun tooManyCertificatesWaits() {
         assertEquals(Enroller.Outcome.OK, enroller.setup(code()))
         // Unconfirmed Wi-Fi certificates pile up until the server refuses
-        // more: too many certificates, or before that too many requests.
-        var outcome = Enroller.Outcome.OK
-        repeat(8) {
-            if (outcome == Enroller.Outcome.OK) outcome = enroller.maintain(renewWifi = true)
-        }
-        assertEquals(Enroller.Outcome.WAIT, outcome)
+        // more. Each renewal spends two authenticated requests (profile and
+        // certificate); the server's per-device bucket holds 10 and refills
+        // one every six seconds, so setup and four renewals empty it. Wait
+        // for two more, so the fifth renewal reaches the five-valid-certificate
+        // cap rather than the request rate limit.
+        repeat(4) { assertEquals(Enroller.Outcome.OK, enroller.maintain(renewWifi = true)) }
+        Thread.sleep(13_000)
+        assertEquals(Enroller.Outcome.WAIT, enroller.maintain(renewWifi = true))
         val state = store.load()!!
         println("Refused: ${state.lastError}")
-        assertTrue(state.lastError!!.contains("HTTP 429"))
+        // The reason in Enroll-Error, not a 429 rate_limited on the way.
+        assertTrue(state.lastError!!.contains("HTTP 429 (too_many_certificates)"))
         assertTrue(state.waitUntil > now)
         assertNull(state.problem)
 
@@ -221,10 +227,6 @@ class EndToEndTest {
         call("POST", "/group?user=carol&group=disabled")
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(renewWifi = true))
         assertEquals(1, wifi.installs.size)
-        if (!sendsReasons(link)) {
-            assertEquals(Problem.DISABLED, store.load()!!.problem)
-            return
-        }
         assertEquals(Problem.USER_DISABLED, store.load()!!.problem)
 
         // Enabled again: the background check stays stopped, the user's check gets through.

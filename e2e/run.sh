@@ -15,7 +15,10 @@ rm -rf "$OUT/run"
 mkdir -p "$OUT"
 (cd e2e/harness && go build -o "../../$OUT/e2e-harness" .)
 
-"$OUT/e2e-harness" -dir "$OUT/run" -eap-enroll "$BIN" >"$OUT/harness.log" 2>&1 &
+# EndToEndTest moves the app's clock 300 days ahead to make the device
+# credential due, while the server issues on real time: Wi-Fi certificates
+# issued after the jump must still be valid on the app's clock.
+"$OUT/e2e-harness" -dir "$OUT/run" -eap-enroll "$BIN" -wifi-ttl 8760h >"$OUT/harness.log" 2>&1 &
 HARNESS=$!
 trap 'kill $HARNESS 2>/dev/null; wait $HARNESS 2>/dev/null; rm -f "$OUT/run/control"' EXIT
 for _ in $(seq 100); do

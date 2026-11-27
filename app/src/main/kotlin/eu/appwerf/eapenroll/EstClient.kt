@@ -3,7 +3,6 @@ package eu.appwerf.eapenroll
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
-import java.io.InputStream
 import java.math.BigInteger
 import java.net.HttpURLConnection
 import java.net.URL
@@ -41,8 +40,9 @@ data class WifiProfile(
  * copied, so nothing may carry the old certificate:
  *
  * - Each client has its own SSLContext, so its TLS sessions are never
- *   resumed by another client; [close] invalidates them and refuses further
- *   requests.
+ *   resumed by another client, and [close] makes it refuse further
+ *   requests. Connections are TLS 1.3 only, where a session can only be
+ *   resumed with a ticket from the server, and the server sends none.
  * - Every request asks for `Connection: close`, so no connection stays in
  *   the platform's pool after its answer.
  * - The credential is offered only on the requests that need it, never on
@@ -58,6 +58,8 @@ class EstClient(
     private val base = SetupUri.normalizeServerUrl(serverUrl) + "/.well-known/est/"
     private val anonymous: SSLContext = EstTls.context(caFingerprint, null)
     private val authenticated: SSLContext? = credential?.let { EstTls.context(caFingerprint, it) }
+    private val anonymousSockets = EstTls.socketFactory(anonymous)
+    private val authenticatedSockets = authenticated?.let(EstTls::socketFactory)
 
     @Volatile
     private var closed = false
@@ -92,10 +94,20 @@ class EstClient(
         }
     }
 
-    /** The Wi-Fi network settings, or null if the server has none (404). */
+    /**
+     * The Wi-Fi network settings, or null if the server has none (404).
+     * Throws [IllegalArgumentException] for a malformed profile.
+     */
     fun wifiProfile(): WifiProfile? {
         val response = request("GET", "wifi/profile", null, null, null, allowNotFound = true)
             ?: return null
+        if (response.status != HttpURLConnection.HTTP_OK) {
+            throw IOException("Unexpected answer to wifi/profile: HTTP ${response.status}")
+        }
+        val type = response.contentType?.substringBefore(';')?.trim()?.lowercase()
+        if (type != "application/json") {
+            throw IOException("Unexpected response type ${response.contentType} for wifi/profile")
+        }
         return Profiles.parse(response.body)
     }
 
@@ -103,8 +115,10 @@ class EstClient(
         certificates(request("GET", "wifi/cacerts", null, null, null, withCredential = false)!!)
 
     /**
-     * Invalidates this client's TLS sessions; later requests throw. Its
-     * connections aren't pooled, so none is left open.
+     * Later requests throw. Its connections aren't pooled, so none is left
+     * open. Invalidating the cached TLS sessions is only a precaution:
+     * Android's session cache lists no session IDs, so it does nothing
+     * there, and the context isn't used again anyway.
      */
     override fun close() {
         closed = true
@@ -139,10 +153,10 @@ class EstClient(
         withCredential: Boolean = true,
     ): Response? {
         check(!closed) { "This client was closed; its credential may have been replaced" }
-        val context = if (withCredential) authenticated ?: anonymous else anonymous
+        val sockets = if (withCredential) authenticatedSockets ?: anonymousSockets else anonymousSockets
         val connection = URL(base + path).openConnection() as HttpsURLConnection
         try {
-            connection.sslSocketFactory = context.socketFactory
+            connection.sslSocketFactory = sockets
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.instanceFollowRedirects = false
@@ -165,16 +179,20 @@ class EstClient(
                 return null
             }
             if (status !in 200..299) {
-                val text = connection.errorStream?.let { readLimited(it) }
+                // Only the first line is used; a large error page mustn't
+                // hide the status and the headers.
+                val text = connection.errorStream?.use { Streams.readPrefix(it, MAX_ERROR_TEXT) }
                     ?.toString(Charsets.UTF_8)?.lineSequence()?.firstOrNull()?.take(200).orEmpty()
-                val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
+                // A zero or negative wait is no instruction; the app then
+                // uses its own default.
+                val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0 }
                 val reason = connection.getHeaderField("Enroll-Error")?.trim()?.takeIf { reasonPattern.matches(it) }
                 throw EstException(status, text.ifEmpty { connection.responseMessage ?: "error" }, retryAfter, reason)
             }
             val responseBody = if (status == HttpURLConnection.HTTP_NO_CONTENT) {
                 ByteArray(0)
             } else {
-                connection.inputStream.use { readLimited(it) }
+                connection.inputStream.use { Streams.readLimited(it, MAX_RESPONSE, "The response") }
             }
             return Response(status, connection.contentType, responseBody)
         } finally {
@@ -190,17 +208,6 @@ class EstClient(
         return Pkcs7.fromEstBody(response.body)
     }
 
-    private fun readLimited(input: InputStream): ByteArray {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val n = input.read(buffer)
-            if (n < 0) break
-            out.write(buffer, 0, n)
-            if (out.size() > MAX_RESPONSE) throw IOException("Response too large")
-        }
-        return out.toByteArray()
-    }
 
     private fun encodeCsr(der: ByteArray): ByteArray = Base64.getEncoder().encode(der)
 
@@ -208,6 +215,7 @@ class EstClient(
         private const val PKCS10 = "application/pkcs10"
         private const val TIMEOUT_MS = 30_000
         private const val MAX_RESPONSE = 256 * 1024
+        private const val MAX_ERROR_TEXT = 4096
         private val reasonPattern = Regex("[a-z0-9_]{1,64}")
 
         /** The `Key-Attestation` header: standard base64, one line, of the concatenated DER certificates. */

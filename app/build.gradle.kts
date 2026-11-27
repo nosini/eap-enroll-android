@@ -15,6 +15,8 @@ fun signingValue(property: String, env: String): String? =
 
 android {
     namespace = "eu.appwerf.eapenroll"
+    // Pinned, also for apksigner in CI (.github/workflows/build.yml).
+    buildToolsVersion = "37.0.0"
     compileSdk {
         version = release(37) {
             minorApiLevel = 2

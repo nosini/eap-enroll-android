@@ -11,6 +11,7 @@ import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 import java.util.TimeZone
 
 /** Builds small EC certificates for tests, with the app's own DER encoder. */
@@ -57,9 +58,11 @@ object TestPki {
     /** UTCTime for 1950 to 2049, GeneralizedTime otherwise (RFC 5280, 4.1.2.5). */
     private fun time(date: Date): ByteArray {
         val utc = TimeZone.getTimeZone("UTC")
-        val year = java.util.Calendar.getInstance(utc).apply { time = date }.get(java.util.Calendar.YEAR)
+        // Locale.ROOT: a locale with another calendar or non-ASCII digits
+        // would write a time that isn't RFC 5280's.
+        val year = java.util.Calendar.getInstance(utc, Locale.ROOT).apply { time = date }.get(java.util.Calendar.YEAR)
         val (tag, pattern) = if (year in 1950..2049) 0x17 to "yyMMddHHmmss'Z'" else 0x18 to "yyyyMMddHHmmss'Z'"
-        val format = SimpleDateFormat(pattern).apply { timeZone = utc }
+        val format = SimpleDateFormat(pattern, Locale.ROOT).apply { timeZone = utc }
         return Der.tlv(tag, format.format(date).toByteArray())
     }
 

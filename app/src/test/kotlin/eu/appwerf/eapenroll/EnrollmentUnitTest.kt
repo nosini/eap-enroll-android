@@ -148,6 +148,21 @@ class CertsTest {
     }
 
     @Test
+    fun checksEveryLinkOfAChain() {
+        val intermediate = TestPki.intermediate(ca, "Test Intermediate")
+        val leaf = TestPki.leaf(intermediate, "alice")
+        Certs.checkChain(listOf(leaf, intermediate.cert, ca.cert))
+        Certs.checkChain(listOf(leaf))
+        // Same name, other key: the intermediate's signature doesn't verify.
+        val impostor = TestPki.root("Test CA")
+        assertThrows(java.security.SignatureException::class.java) {
+            Certs.checkChain(listOf(leaf, intermediate.cert, impostor.cert))
+        }
+        assertThrows(IllegalStateException::class.java) { Certs.checkChain(listOf(leaf, ca.cert)) }
+        assertThrows(IllegalStateException::class.java) { Certs.checkChain(listOf(leaf, ca.cert, intermediate.cert)) }
+    }
+
+    @Test
     fun dropsRootsForWifi() {
         val intermediate = TestPki.intermediate(ca, "Test Intermediate")
         val leaf = TestPki.leaf(intermediate, "alice")

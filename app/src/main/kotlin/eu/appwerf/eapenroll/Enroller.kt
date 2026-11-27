@@ -593,7 +593,12 @@ class Enroller(
         }
         check(leaf.basicConstraints == -1) { "The server returned a CA certificate" }
         chain.drop(1).forEach { check(it.basicConstraints >= 0) { "Not a CA certificate: ${it.subjectX500Principal}" } }
-        if (chain.size > 1) leaf.verify(chain[1].publicKey)
+        Certs.checkChain(chain)
+        // Stored, a credential the phone can't use would replace one that
+        // works. A start in the future is left alone: the phone's clock may
+        // be a little behind the server's.
+        check(leaf.notBefore.before(leaf.notAfter)) { "The server's certificate has no valid period" }
+        check(clock() < leaf.notAfter.time) { "The server's certificate expired on ${leaf.notAfter}" }
     }
 
     companion object {
@@ -674,6 +679,19 @@ object Certs {
             .map { it.trim() }
             .firstOrNull { it.startsWith("CN=") }
             ?.removePrefix("CN=") ?: ""
+
+    /**
+     * Checks that each certificate of [chain] is issued and signed by the
+     * next one. Throws [IllegalStateException] or a [GeneralSecurityException].
+     */
+    fun checkChain(chain: List<X509Certificate>) {
+        chain.zipWithNext { cert, issuer ->
+            check(cert.issuerX500Principal == issuer.subjectX500Principal) {
+                "${cert.subjectX500Principal} isn't issued by the next certificate in the chain"
+            }
+            cert.verify(issuer.publicKey)
+        }
+    }
 
     /** Renew at 2/3 of the lifetime. */
     fun renewalDue(cert: X509Certificate, now: Long): Boolean {

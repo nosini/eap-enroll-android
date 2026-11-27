@@ -16,6 +16,7 @@ import java.security.cert.X509Certificate
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
 import java.util.Collections
+import java.util.Date
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
@@ -122,12 +123,20 @@ class FakeEstServer(hostName: String = "localhost") : AutoCloseable {
 
     companion object {
         /** A certificate from [issuer] for the key in the request's CSR, as the server sends it. */
-        fun issue(request: Request, issuer: TestPki.Issuer, name: String): Answer {
+        fun issue(
+            request: Request,
+            issuer: TestPki.Issuer,
+            name: String,
+            notBefore: Date = Date(System.currentTimeMillis() - 3_600_000),
+            notAfter: Date = Date(System.currentTimeMillis() + 86_400_000),
+            /** Certificates after the issuer's, e.g. its CA. */
+            moreChain: List<X509Certificate> = emptyList(),
+        ): Answer {
             val csr = Base64.getMimeDecoder().decode(request.body)
             val info = Der.parse(csr).children()[0]
             val publicKey = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(info.children()[2].encoded()))
-            val leaf = TestPki.leaf(issuer, name, KeyPair(publicKey, null))
-            val body = Base64.getEncoder().encodeToString(TestPki.certsOnly(listOf(leaf, issuer.cert)))
+            val leaf = TestPki.leaf(issuer, name, KeyPair(publicKey, null), notBefore, notAfter)
+            val body = Base64.getEncoder().encodeToString(TestPki.certsOnly(listOf(leaf, issuer.cert) + moreChain))
             return Answer(200, body, mapOf("Content-Type" to "application/pkcs7-mime; smime-type=certs-only"))
         }
 

@@ -30,6 +30,8 @@ object WifiSetup {
         notifyOnConnect: Boolean = false,
     ): WifiNetworkSuggestion {
         require(settings.ssid.isNotEmpty()) { "SSID is empty" }
+        // Android cuts a longer SSID off instead of refusing it.
+        require(settings.ssid.toByteArray(Charsets.UTF_8).size <= 32) { "SSID is longer than 32 bytes" }
         require(settings.identity.isNotEmpty()) { "Identity is empty" }
         require(settings.serverDomain.isNotEmpty()) { "Server domain is empty" }
         require(settings.caCertificates.isNotEmpty()) { "No CA certificate imported" }

@@ -370,6 +370,50 @@ class RefusalTest {
     }
 
     @Test
+    fun unusableWifiCertificatesAreNotInstalled() {
+        val root = TestPki.root("Wi-Fi Root")
+        val intermediate = TestPki.intermediate(root, "Wi-Fi Issuing CA")
+        val impostor = TestPki.root("Wi-Fi Root")
+        for ((label, issue) in listOf<Pair<String, (FakeEstServer.Request) -> FakeEstServer.Answer>>(
+            "expired" to { FakeEstServer.issue(it, wifiCa, "alice", Date(now - 2 * day), Date(now - 1000)) },
+            "no valid period" to { FakeEstServer.issue(it, wifiCa, "alice", Date(now), Date(now - day)) },
+            "bad upper link" to { FakeEstServer.issue(it, intermediate, "alice", moreChain = listOf(impostor.cert)) },
+        )) {
+            wifiDue()
+            val profile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert))
+            server.answer = {
+                when (it.path) {
+                    "wifi/profile" -> FakeEstServer.profile(profile)
+                    "wifi/simpleenroll" -> issue(it)
+                    else -> FakeEstServer.Answer(503, "unavailable\n")
+                }
+            }
+            val before = store.load()!!.wifiChain
+            assertEquals(label, Enroller.Outcome.RETRY, enroller.maintain())
+            assertTrue(label, wifi.installs.isEmpty())
+            assertEquals(label, before, store.load()!!.wifiChain)
+        }
+    }
+
+    @Test
+    fun expiredDeviceCredentialIsNotStored() {
+        server.answer = {
+            if (it.path == "device/simplereenroll") {
+                FakeEstServer.issue(it, TestPki.root("Device CA"), "alice", Date(now - 2 * day), Date(now - 1000))
+            } else {
+                FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        val state = store.load()!!
+        assertEquals(credential, state.deviceChain[0])
+        assertNull(state.problem)
+        assertNull(state.previousDeviceAlias)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+        assertTrue(state.lastError!!.contains("expired"))
+    }
+
+    @Test
     fun failedInstallWaitsForTheDailyCheck() {
         wifiDue()
         val before = store.load()!!

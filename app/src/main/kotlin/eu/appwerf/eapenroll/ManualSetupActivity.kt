@@ -265,6 +265,7 @@ class ManualSetupActivity : Activity() {
         chain.drop(1).forEach {
             check(it.basicConstraints >= 0) { "Not a CA certificate: ${it.subjectX500Principal}" }
         }
+        Certs.checkChain(chain)
         val warnings = ArrayList<String>()
         val identity = prefs.getString("identity", "")!!
         val cn = Certs.commonName(leaf)
@@ -283,7 +284,8 @@ class ManualSetupActivity : Activity() {
         check(chainFile.exists()) { "Import the signed certificate first" }
         val settings = networkSettings()
         val keyPair = vault.load()
-        val chain = Pem.certificates(chainFile.readBytes())
+        // Wi-Fi takes at most five certificates; the root isn't needed.
+        val chain = Certs.withoutRoots(Pem.certificates(chainFile.readBytes()))
         AppLog.add("Network: SSID '${settings.ssid}' (${settings.ssid.length} characters), identity '${settings.identity}', " +
             "domain '${settings.serverDomain}', ${if (settings.wpa3) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"}, " +
             "${settings.caCertificates.size} CA certificate(s), client chain of ${chain.size}")

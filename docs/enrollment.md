@@ -194,7 +194,7 @@ disabled device.
 
 | Answer | App |
 | --- | --- |
-| 401 | The server doesn't accept the device credential (unknown or revoked): stops; needs a new setup link. |
+| 401 | The server doesn't know the device credential, or none came with the request: stops; needs a new setup link. (A disabled device or a reused replaced credential gets 403, below; an expired credential fails the TLS handshake, so the app doesn't offer it.) |
 | 401 `credential_superseded` | The connection was opened with a replaced credential: reconnects with the current one and retries once; if that gets it again, retried later. |
 | (no request) | The device credential has expired: stops without contacting the server; needs a new setup link. |
 | 403 `device_disabled`, `credential_reuse` | The device is disabled: stops; needs a new setup link. |

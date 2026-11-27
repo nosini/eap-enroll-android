@@ -102,8 +102,10 @@ phone.
 | Notifications (optional) | Warnings about failing renewals. |
 | Run at startup | Keeping the daily check scheduled after a restart. |
 
-If Android won't ask for one of these again, because it was denied for
-good, tapping its card on the main screen opens the app's settings.
+The first denial of a permission, or cancelling its prompt, only leaves the
+card in place: Android would ask again. Once Android won't ask any more,
+because the permission was denied for good, tapping its card opens the
+app's settings.
 
 ## Manual setup
 

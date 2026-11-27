@@ -73,8 +73,6 @@ class MainActivity : Activity() {
     private var setupWpa3Shown = false
     private var approval: Int? = null
 
-    /** The request code of a permission request the user tapped for, or null for one the app made. */
-    private var requestedByUser: Int? = null
     private val screen = MainScreen
     private val onWorkFinished: () -> Unit = { refresh() }
 
@@ -386,7 +384,33 @@ class MainActivity : Activity() {
 
     /** A permission request the user tapped for, unlike setup's own local network request. */
     private fun requestForTask(permissions: Array<String>, requestCode: Int) {
-        requestedByUser = requestCode
+        requestPermission(permissions, requestCode, byUser = true)
+    }
+
+    /**
+     * Requests [permissions], remembering what Android said about them
+     * before for [onRequestPermissionsResult] and across a rotation.
+     * [byUser]: the user tapped for it, so a denial Android won't ask about
+     * again sends the user to the app's settings.
+     */
+    private fun requestPermission(permissions: Array<String>, requestCode: Int, byUser: Boolean) {
+        val requested = prefs.getStringSet(PREF_REQUESTED, emptySet())!!.toSet()
+        screen.permissionRequest = if (byUser) {
+            PendingPermissions(
+                requestCode,
+                permissions.associateWith {
+                    PendingPermissions.Before(
+                        requested = it in requested,
+                        rationale = shouldShowRequestPermissionRationale(it),
+                    )
+                },
+            )
+        } else {
+            null
+        }
+        // Android's answer doesn't say whether the app has asked before,
+        // and the next request needs that.
+        prefs.edit().putStringSet(PREF_REQUESTED, requested + permissions).apply()
         requestPermissions(permissions, requestCode)
     }
 
@@ -521,8 +545,7 @@ class MainActivity : Activity() {
             screen.pendingSetup = link
             updateButtons()
             // The app's own request: a denial doesn't open Settings.
-            requestedByUser = null
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK)
+            requestPermission(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), REQUEST_LOCAL_NETWORK, byUser = false)
             return
         }
         startSetup(link)
@@ -681,22 +704,31 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        val byUser = requestCode == requestedByUser
-        requestedByUser = null
+        val pending = screen.permissionRequest
+        screen.permissionRequest = null
         AppLog.add("Permissions: " + permissions.indices.joinToString {
             "${permissions[it].substringAfterLast('.')}=" +
                 if (grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
         })
         // Android stops asking after a denial the user meant for good, so
         // the task's button would do nothing. Once it won't show the dialog
-        // any more, send the user to the app's settings instead. Background
-        // location is left out: since Android 11 its request already opens
-        // Settings, so there is nothing more to open.
-        val denied = permissions.indices.filter {
-            permissions[it] != Manifest.permission.ACCESS_BACKGROUND_LOCATION &&
-                grantResults.getOrNull(it) != PackageManager.PERMISSION_GRANTED
+        // any more, send the user to the app's settings. That is only the
+        // case when the app asked before, showed no rationale before this
+        // request and none after the denial: not on a first request (denied,
+        // cancelled with Back, or answered at once) and not when the user
+        // just chose "don't ask again", since Android showed a rationale
+        // before that request. Background location goes the same way; its
+        // request opens Settings by itself, but that proves nothing.
+        val openSettings = pending != null && pending.code == requestCode && permissions.indices.any { i ->
+            val before = pending.before[permissions[i]] ?: return@any false
+            grantResults.getOrNull(i) != PackageManager.PERMISSION_GRANTED &&
+                openSettingsAfterDenial(
+                    requestedBefore = before.requested,
+                    rationaleBefore = before.rationale,
+                    rationaleAfter = shouldShowRequestPermissionRationale(permissions[i]),
+                )
         }
-        if (byUser && denied.any { !shouldShowRequestPermissionRationale(permissions[it]) }) {
+        if (openSettings) {
             AppLog.add("Android won't ask again; opening the app's settings")
             Toast.makeText(this, R.string.permission_settings_hint, Toast.LENGTH_LONG).show()
             startActivity(
@@ -729,6 +761,7 @@ class MainActivity : Activity() {
         const val REQUEST_NOTIFICATIONS = 6
         const val REQUEST_LOCAL_NETWORK = 7
         const val PREF_DISMISSED = "dismissed_tasks"
+        const val PREF_REQUESTED = "requested_permissions"
         const val TASK_APPROVE = "approve"
         const val TASK_LOCATION = "location"
         const val TASK_BACKGROUND = "background_location"
@@ -766,6 +799,9 @@ private object MainScreen {
     /** A setup waiting for the answer to the local network permission request. */
     var pendingSetup: SetupUri? = null
 
+    /** The permission request the user started, until Android answers it. */
+    var permissionRequest: PendingPermissions? = null
+
     /** The setup field's text while the activity is recreated. */
     var setupText: String? = null
 
@@ -802,3 +838,21 @@ private object MainScreen {
         listener?.invoke()
     }
 }
+
+/**
+ * A permission request the user started and what Android said before it.
+ * Kept with the screen because a rotation creates a new activity while
+ * Android still answers the old request.
+ */
+internal class PendingPermissions(val code: Int, val before: Map<String, Before>) {
+    /** [requested]: the app asked for the permission before. [rationale]: Android showed a rationale before this request. */
+    class Before(val requested: Boolean, val rationale: Boolean)
+}
+
+/**
+ * Whether a denied permission request should send the user to the app's
+ * settings: Android asked before, showed no rationale before this request
+ * and shows none after the denial, so it won't ask again.
+ */
+internal fun openSettingsAfterDenial(requestedBefore: Boolean, rationaleBefore: Boolean, rationaleAfter: Boolean): Boolean =
+    requestedBefore && !rationaleBefore && !rationaleAfter

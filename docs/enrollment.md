@@ -104,7 +104,10 @@ Only the WPA2/WPA3 choice is made in the app, because the profile
 doesn't say whether the network is WPA3-Enterprise only (see
 [Proposals for the server](#proposals-for-the-server)). It is chosen at
 setup and stored with the enrollment, so every renewal uses it; manual
-setup has its own switch, which doesn't affect it.
+setup has its own switch, which doesn't affect it. An enrollment stored
+before the choice was kept with it takes manual setup's switch once and
+stores that value, so changing the switch afterwards doesn't affect it
+either.
 
 ## Renewal
 

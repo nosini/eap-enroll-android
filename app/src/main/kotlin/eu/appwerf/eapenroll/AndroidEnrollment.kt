@@ -23,6 +23,7 @@ import java.security.ProviderException
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.util.UUID
+import org.json.JSONObject
 
 /**
  * Device credential keys in the Android Keystore: EC P-256, non-exportable,
@@ -138,9 +139,13 @@ class PrefsStateStore(context: Context) : StateStore {
     private val settings = context.getSharedPreferences(NetworkPrefs.PREFS, Context.MODE_PRIVATE)
 
     // A state stored without the security mode takes the one the network
-    // settings had, which the app used for it.
-    override fun load(): EnrollmentState? = prefs.getString(KEY, null)?.let {
-        EnrollmentState.parse(it, wpa3 = settings.getBoolean(NetworkPrefs.WPA3, false))
+    // settings had, which the app used for it. That is saved right away, so
+    // a later change in manual setup doesn't affect the enrollment.
+    override fun load(): EnrollmentState? {
+        val json = prefs.getString(KEY, null) ?: return null
+        val state = EnrollmentState.parse(json, wpa3 = settings.getBoolean(NetworkPrefs.WPA3, false))
+        if (!JSONObject(json).has("wpa3")) save(state)
+        return state
     }
 
     override fun save(state: EnrollmentState?) {

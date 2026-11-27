@@ -2,13 +2,30 @@
 
 ## Building
 
-Building needs JDK 17 and an Android SDK with platform 37.2.
+Building needs JDK 17 and an Android SDK with platform 37.2 and
+build-tools 37.0.0.
 
     ./gradlew testDebugUnitTest assembleDebug
 
 The debug APK ends up in `app/build/outputs/apk/debug/`.
 [e2e/README.md](../e2e/README.md) describes the end-to-end test against
 eap-enroll-server.
+
+## Dependencies
+
+Gradle checks every downloaded artifact (plugins included) against the
+SHA-256 in `gradle/verification-metadata.xml`, locally and in CI. After
+changing a dependency or a plugin version, regenerate the file with the
+tasks that resolve them, then review the diff (new components only for
+what you changed):
+
+    ./gradlew --no-configuration-cache --write-verification-metadata sha256 \
+      help :app:testDebugUnitTest :app:lintDebug :app:lintRelease \
+      :app:assembleDebug :app:assembleRelease
+
+The Android build tools are pinned (`buildToolsVersion`), and so are, in
+`.github/workflows/build.yml`, the runner image, the JDK patch release and
+the Android SDK packages; update them there together.
 
 ## Release builds
 

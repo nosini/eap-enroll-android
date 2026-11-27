@@ -266,3 +266,88 @@ class LocalStateTest {
         assertTrue(leftover !in keys.keys)
     }
 }
+
+/** Which connections count as proof that the newly installed certificate works. */
+class ConnectionObservationTest {
+    private val keys = MemoryKeys()
+    private val store = MemoryStore()
+    private var wall = 1_700_000_000_000L
+    private var elapsed = 900_000L
+    private var boot = 3
+    private val enroller = Enroller(
+        keys, RecordingWifi(), store, log = { println(it) },
+        clock = { wall }, elapsedClock = { elapsed }, bootCount = { boot },
+    )
+
+    private fun awaitingConfirmation(installedAt: Long, installedElapsed: Long, installedBoot: Int = boot) {
+        val ca = TestPki.root("Test CA")
+        val alias = keys.create()
+        store.save(EnrollmentState(
+            "https://enroll.example.org", "ab".repeat(32), alias,
+            listOf(TestPki.leaf(ca, "alice", keys.keyPair(alias))),
+            wifiInstalledAt = installedAt, wifiInstalledElapsed = installedElapsed,
+            wifiInstalledBoot = installedBoot, confirmPending = true,
+        ))
+    }
+
+    @Test
+    fun aClockJumpForwardDoesNotConfirmTooSoon() {
+        awaitingConfirmation(wall, elapsed)
+        wall += 60_000
+        elapsed += 1_000
+        assertFalse(enroller.connectionObserved(wall, elapsed, boot))
+        assertTrue(store.load()!!.confirmPending)
+    }
+
+    @Test
+    fun aClockJumpBackStillConfirms() {
+        awaitingConfirmation(wall, elapsed)
+        wall -= 60_000
+        elapsed += Enroller.INSTALL_SETTLE_MS
+        assertTrue(enroller.connectionObserved(wall, elapsed, boot))
+        assertTrue(store.load()!!.connectedAfterInstall)
+    }
+
+    @Test
+    fun aConnectionAfterALaterBootCounts() {
+        // elapsedRealtime started again with the boot; the boot count says
+        // the connection is from after the install.
+        awaitingConfirmation(wall, 900_000)
+        assertTrue(enroller.connectionObserved(wall + 1_000, 5_000, boot + 1))
+    }
+
+    @Test
+    fun aConnectionFromAnEarlierBootDoesNotCount() {
+        awaitingConfirmation(wall, elapsed)
+        assertFalse(enroller.connectionObserved(wall + 60_000, elapsed + 60_000, boot - 1))
+        assertTrue(store.load()!!.confirmPending)
+    }
+
+    @Test
+    fun aBroadcastFromBeforeTheInstallHandledLaterDoesNotCount() {
+        // ConnectionReceiver handed a broadcast from just before the install
+        // to a job, which ran after it: same boot, an elapsed time smaller
+        // than the install's.
+        awaitingConfirmation(wall, elapsed)
+        assertFalse(enroller.connectionObserved(wall + 60_000, elapsed - 1_000, boot))
+    }
+
+    @Test
+    fun anUnknownBootCountUsesTheWallClock() {
+        awaitingConfirmation(wall, elapsed)
+        assertFalse(enroller.connectionObserved(wall + Enroller.INSTALL_SETTLE_MS - 1, 5_000, 0))
+        assertTrue(enroller.connectionObserved(wall + Enroller.INSTALL_SETTLE_MS, 5_000, 0))
+
+        // The state stored before the boot count was kept is unknown too.
+        awaitingConfirmation(wall, elapsed, installedBoot = 0)
+        assertFalse(enroller.connectionObserved(wall + Enroller.INSTALL_SETTLE_MS - 1, 5_000, boot))
+        assertTrue(enroller.connectionObserved(wall + Enroller.INSTALL_SETTLE_MS, 5_000, boot))
+    }
+
+    @Test
+    fun aStateFromBeforeTheElapsedClockUsesTheWallClock() {
+        awaitingConfirmation(wall, installedElapsed = 0)
+        assertFalse(enroller.connectionObserved(wall + Enroller.INSTALL_SETTLE_MS - 1, 5_000, boot))
+        assertTrue(enroller.connectionObserved(wall + Enroller.INSTALL_SETTLE_MS, 5_000, boot))
+    }
+}

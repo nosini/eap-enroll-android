@@ -224,7 +224,14 @@ new certificate was installed:
   connection and only clears its cached keys (AOSP
   `ClientModeImpl.onNetworkUpdated()`). The new certificate is used on the
   next connection. So a broadcast in the first 10 seconds after the update
-  isn't counted.
+  isn't counted. The app measures those 10 seconds on the phone's
+  monotonic clock (`elapsedRealtime`), so a clock change doesn't make a
+  connection count too soon or hold back a real one. The state also keeps
+  the boot count: a broadcast from another boot counts only if that boot
+  is later than the install's, since the connection then came after the
+  install; an earlier boot doesn't count. Without both (a state stored
+  before they were kept, or a phone that won't say), the wall clock
+  decides.
 - Without location permission, or if the phone never reconnects while the
   app may hear it, nothing is confirmed and the older certificates simply
   expire. Turning Wi-Fi off and on (quick settings) with the app open

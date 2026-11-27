@@ -5,7 +5,9 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import android.os.UserManager
+import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
@@ -230,6 +232,10 @@ object Enrollment {
         val app = context.applicationContext
         // toLogcat is false above: both writes to logcat already.
         val both: (String) -> Unit = { Log.i(TAG, it); log(it) }
-        return Enroller(AndroidDeviceKeys(both), SuggestionInstaller(app, both), PrefsStateStore(app), both)
+        return Enroller(
+            AndroidDeviceKeys(both), SuggestionInstaller(app, both), PrefsStateStore(app), both,
+            elapsedClock = SystemClock::elapsedRealtime,
+            bootCount = { Settings.Global.getInt(app.contentResolver, Settings.Global.BOOT_COUNT, 0) },
+        )
     }
 }

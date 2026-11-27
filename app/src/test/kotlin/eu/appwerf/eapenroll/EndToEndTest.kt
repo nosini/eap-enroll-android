@@ -98,8 +98,16 @@ class EndToEndTest {
         assertEquals(1, wifi.installs.size)
 
         // A connection right after installing may predate it.
-        assertFalse(enroller.connectionObserved(state.wifiInstalledAt + 1_000))
-        assertTrue(enroller.connectionObserved(state.wifiInstalledAt + 60_000))
+        assertFalse(
+            enroller.connectionObserved(
+                state.wifiInstalledAt + 1_000, state.wifiInstalledElapsed + 1_000, state.wifiInstalledBoot,
+            ),
+        )
+        assertTrue(
+            enroller.connectionObserved(
+                state.wifiInstalledAt + 60_000, state.wifiInstalledElapsed + 60_000, state.wifiInstalledBoot,
+            ),
+        )
         assertEquals(Enroller.Outcome.OK, enroller.maintain())
         assertFalse(store.load()!!.confirmPending)
         assertFalse(firstSerial in revoked("pki-radius"))
@@ -110,7 +118,7 @@ class EndToEndTest {
         assertEquals(2, wifi.installs.size)
         state = store.load()!!
         assertNotEquals(firstSerial, state.wifiChain!![0].serialNumber)
-        assertTrue(enroller.connectionObserved(now + 60_000))
+        assertTrue(enroller.connectionObserved(now + 60_000, state.wifiInstalledElapsed + 60_000, state.wifiInstalledBoot))
         assertEquals(Enroller.Outcome.OK, enroller.maintain())
         assertTrue(firstSerial in revoked("pki-radius"))
 

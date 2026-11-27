@@ -222,6 +222,8 @@ class StateJsonTest {
             profile = WifiProfile("Example Net ", "radius.example.org", listOf(root.cert)),
             wifiChain = listOf(wifi, root.cert),
             wifiInstalledAt = 1234,
+            wifiInstalledElapsed = 789,
+            wifiInstalledBoot = 7,
             confirmPending = true,
             connectedAfterInstall = true,
             problem = Problem.USER_DISABLED,
@@ -236,6 +238,21 @@ class StateJsonTest {
         val parsed = EnrollmentState.fromJson(JSONObject(minimal.toJson().toString()))
         assertEquals(minimal, parsed)
         assertNull(parsed.profile)
+    }
+
+    @Test
+    fun stateWithoutTheInstallElapsedTimeMeansZero() {
+        val root = TestPki.root("Test Root")
+        val state = EnrollmentState(
+            "https://enroll.example.org", "ab".repeat(32), "device-1", listOf(TestPki.leaf(root, "alice")),
+            wifiInstalledAt = 1234, wifiInstalledElapsed = 789, wifiInstalledBoot = 7,
+        )
+        val json = state.toJson()
+        json.remove("wifi_installed_elapsed")
+        json.remove("wifi_installed_boot")
+        val parsed = EnrollmentState.fromJson(json)
+        assertEquals(0, parsed.wifiInstalledElapsed)
+        assertEquals(0, parsed.wifiInstalledBoot)
     }
 
     @Test

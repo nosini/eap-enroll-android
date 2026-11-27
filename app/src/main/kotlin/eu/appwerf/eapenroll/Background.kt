@@ -15,6 +15,8 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
+import android.os.SystemClock
+import android.provider.Settings
 import java.text.DateFormat
 import java.util.concurrent.TimeUnit
 
@@ -152,6 +154,8 @@ class ConnectionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != WifiManager.ACTION_WIFI_NETWORK_SUGGESTION_POST_CONNECTION) return
         val at = System.currentTimeMillis()
+        val elapsed = SystemClock.elapsedRealtime()
+        val boot = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, 0)
         val suggestion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_SUGGESTION, WifiNetworkSuggestion::class.java)
         } else {
@@ -168,7 +172,7 @@ class ConnectionReceiver : BroadcastReceiver() {
                 AppLog.add("Post-connection broadcast for '${suggestion?.ssid}'")
                 // getSsid() already unwraps the quotes of a configured SSID,
                 // so an SSID that begins and ends with quotes keeps them.
-                if (ssid != null && suggestion?.ssid == ssid && enroller.connectionObserved(at)) {
+                if (ssid != null && suggestion?.ssid == ssid && enroller.connectionObserved(at, elapsed, boot)) {
                     Jobs.runSoon(context, Jobs.AFTER_CONNECTION_DELAY_MS)
                 }
             } catch (e: Exception) {

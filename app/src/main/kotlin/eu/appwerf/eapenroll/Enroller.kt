@@ -88,6 +88,14 @@ data class EnrollmentState(
     /** The certificate in the current network suggestion, issuing CAs after it. */
     val wifiChain: List<X509Certificate>? = null,
     val wifiInstalledAt: Long = 0,
+    /**
+     * [wifiInstalledAt] on the monotonic clock, to tell connections from
+     * before the install apart within a boot; 0 for a state stored before
+     * it was kept.
+     */
+    val wifiInstalledElapsed: Long = 0,
+    /** The boot [wifiInstalledElapsed] belongs to; 0 when unknown. */
+    val wifiInstalledBoot: Int = 0,
     /** The server hasn't been told yet that [wifiChain] works. */
     val confirmPending: Boolean = false,
     /** Wi-Fi connected through the suggestion after [wifiInstalledAt]. */
@@ -109,6 +117,8 @@ data class EnrollmentState(
         put("wpa3", wpa3)
         wifiChain?.let { put("wifi_chain", Pem.encodeChain(it)) }
         put("wifi_installed_at", wifiInstalledAt)
+        put("wifi_installed_elapsed", wifiInstalledElapsed)
+        put("wifi_installed_boot", wifiInstalledBoot)
         put("confirm_pending", confirmPending)
         put("connected_after_install", connectedAfterInstall)
         problem?.let { put("problem", it.name) }
@@ -139,6 +149,8 @@ data class EnrollmentState(
             wpa3 = json.optBoolean("wpa3", wpa3),
             wifiChain = json.optStringOrNull("wifi_chain")?.let { Pem.certificates(it.toByteArray()) },
             wifiInstalledAt = json.optLong("wifi_installed_at"),
+            wifiInstalledElapsed = json.optLong("wifi_installed_elapsed"),
+            wifiInstalledBoot = json.optInt("wifi_installed_boot"),
             confirmPending = json.optBoolean("confirm_pending"),
             connectedAfterInstall = json.optBoolean("connected_after_install"),
             problem = json.optStringOrNull("problem")?.let { Problem.valueOf(it) },
@@ -173,6 +185,10 @@ class Enroller(
     private val store: StateStore,
     private val log: (String) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Milliseconds since boot (Android's elapsedRealtime), unaffected by clock changes. */
+    private val elapsedClock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Android's boot count, or 0 when it can't be read. */
+    private val bootCount: () -> Int = { 0 },
 ) {
     enum class Outcome {
         NOT_ENROLLED,
@@ -248,16 +264,33 @@ class Enroller(
         }
 
     /**
-     * Records that Wi-Fi connected through this app's suggestion at [at].
-     * Returns true if that proves the current certificate works, so a
-     * [maintain] run should confirm it.
+     * Records that Wi-Fi connected through this app's suggestion at [at],
+     * [elapsed] milliseconds into boot [boot]. Returns true if that proves
+     * the current certificate works, so a [maintain] run should confirm it.
      */
-    fun connectionObserved(at: Long = clock()): Boolean = synchronized(LOCK) {
+    fun connectionObserved(
+        at: Long = clock(),
+        elapsed: Long = elapsedClock(),
+        boot: Int = bootCount(),
+    ): Boolean = synchronized(LOCK) {
         val state = store.load() ?: return false
         if (!state.confirmPending || state.connectedAfterInstall) return state.confirmPending
         // A connection made before the new suggestion was installed could
-        // still be reported just after it.
-        if (at < state.wifiInstalledAt + INSTALL_SETTLE_MS) {
+        // still be reported just after it. Within a boot, the monotonic
+        // clock tells when the connection was made; across boots only the
+        // boot count can, since the broadcast carries no elapsed time from
+        // before the reboot. Without either (an old state, or a phone that
+        // won't say), only the wall time remains.
+        val installedElapsed = state.wifiInstalledElapsed
+        val installedBoot = state.wifiInstalledBoot
+        val counted = if (installedElapsed == 0L || installedBoot == 0 || boot == 0) {
+            at >= state.wifiInstalledAt + INSTALL_SETTLE_MS
+        } else if (boot != installedBoot) {
+            boot > installedBoot
+        } else {
+            elapsed >= installedElapsed + INSTALL_SETTLE_MS
+        }
+        if (!counted) {
             log("Connection reported too soon after installing the certificate; not counted")
             return false
         }
@@ -656,6 +689,8 @@ class Enroller(
             profile = profile,
             wifiChain = chain,
             wifiInstalledAt = clock(),
+            wifiInstalledElapsed = elapsedClock(),
+            wifiInstalledBoot = bootCount(),
             confirmPending = true,
             connectedAfterInstall = false,
         )

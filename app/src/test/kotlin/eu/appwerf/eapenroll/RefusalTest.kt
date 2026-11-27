@@ -149,10 +149,23 @@ class RefusalTest {
 
     @Test
     fun otherDeviceRenewalErrorsStopTheCheck() {
-        wifiDueAndDeviceRenewal(FakeEstServer.Answer(400, "bad CSR\n", mapOf("Enroll-Error" to "bad_csr")))
-        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
-        assertEquals(listOf("device/simplereenroll"), server.requests.map { it.path })
-        assertTrue(wifi.installs.isEmpty())
+        // A request the server turned down as malformed won't pass soon;
+        // only 5xx are retried soon.
+        for ((answer, outcome) in listOf(
+            FakeEstServer.Answer(400, "bad CSR\n", mapOf("Enroll-Error" to "bad_csr")) to Enroller.Outcome.LATER,
+            FakeEstServer.Answer(413, "too large\n", mapOf("Enroll-Error" to "body_too_large")) to Enroller.Outcome.LATER,
+            FakeEstServer.Answer(404) to Enroller.Outcome.LATER,
+            FakeEstServer.Answer(500) to Enroller.Outcome.RETRY,
+        )) {
+            val label = "${answer.status} ${answer.headers["Enroll-Error"]}"
+            server.requests.clear()
+            wifi.installs.clear()
+            wifiDueAndDeviceRenewal(answer)
+            assertEquals(label, outcome, enroller.maintain())
+            assertEquals(label, listOf("device/simplereenroll"), server.requests.map { it.path })
+            assertTrue(label, wifi.installs.isEmpty())
+            assertNull(label, store.load()!!.problem)
+        }
     }
 
     @Test
@@ -430,7 +443,7 @@ class RefusalTest {
         for (reason in listOf("bad_request", null)) {
             server.requests.clear()
             if (reason == null) answer(400) else answer(400, "Enroll-Error" to reason)
-            assertEquals(reason, Enroller.Outcome.RETRY, enroller.maintain())
+            assertEquals(reason, Enroller.Outcome.LATER, enroller.maintain())
             assertEquals(reason, listOf("wifi/confirm"), server.requests.map { it.path })
             val state = store.load()!!
             assertTrue(reason, state.confirmPending && state.connectedAfterInstall)

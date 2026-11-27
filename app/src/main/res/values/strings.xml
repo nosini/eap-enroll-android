@@ -55,7 +55,7 @@
     <string name="result_set_up">Set up. If Android asks whether to allow the suggested network, allow it.</string>
     <string name="result_renewed">New Wi-Fi certificate installed. It\'s used from the next connection.</string>
     <string name="result_up_to_date">Everything is up to date.</string>
-    <string name="result_retry">The server couldn\'t be reached; the app tries again soon.</string>
+    <string name="result_retry">The check failed; the app tries again soon.</string>
     <string name="result_later">That didn\'t work this time; the daily check tries again.</string>
     <string name="result_wait">The server asked to wait until %1$s.</string>
     <string name="result_failed">Failed: %1$s</string>

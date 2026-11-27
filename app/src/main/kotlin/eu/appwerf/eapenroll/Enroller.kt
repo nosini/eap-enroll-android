@@ -461,13 +461,22 @@ class Enroller(
             fail(state, e, null, waitUntil = clock() + seconds * 1000)
             Outcome.WAIT
         }
-        else -> {
+        // A 5xx or a refused attestation may pass on its own; other
+        // answers, such as 400 bad_csr or 413 body_too_large, mean the
+        // request itself is wrong, so a retry soon would fail the same way.
+        e.status >= 500 || isBadAttestation(e) -> {
             fail(state, e, null)
             Outcome.RETRY
+        }
+        else -> {
+            fail(state, e, null)
+            Outcome.LATER
         }
     }
 
     private fun isAttestationRefused(e: EstException) = e.status == 403 && e.reason == "attestation_refused"
+
+    private fun isBadAttestation(e: EstException) = e.status == 400 && e.reason == "bad_attestation"
 
     /**
      * Whether a failed device credential renewal leaves the current
@@ -477,8 +486,7 @@ class Enroller(
      */
     private fun keepsCurrentCredential(e: Exception): Boolean = when (e) {
         is NewDeviceKeyException -> true
-        is EstException -> isAttestationRefused(e) ||
-            (e.status == 400 && e.reason == "bad_attestation") ||
+        is EstException -> isAttestationRefused(e) || isBadAttestation(e) ||
             (e.status == 502 && e.reason == "attestation_status_unavailable")
         else -> false
     }

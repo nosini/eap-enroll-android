@@ -66,6 +66,9 @@ class MainActivity : Activity() {
     private class Snapshot(val state: EnrollmentState?, val deviceKey: String?, val now: Long, val unreadable: Boolean = false)
 
     private var snapshot: Snapshot? = null
+
+    /** The WPA3 switch has been set up (or restored with the activity); it isn't reset after that. */
+    private var setupWpa3Shown = false
     private var approval: Int? = null
     private val screen = MainScreen
     private val onWorkFinished: () -> Unit = { refresh() }
@@ -85,6 +88,7 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         Ui.edgeToEdge(this, findViewById(R.id.root))
         bindViews()
+        setupWpa3Shown = savedInstanceState != null
         // The link isn't saved with the activity (it holds the one-time code);
         // kept in memory only while the activity is recreated.
         screen.setupText?.let { setupField.setText(it) }
@@ -133,9 +137,6 @@ class MainActivity : Activity() {
         setupButton.setOnClickListener { setUp() }
         checkButton.setOnClickListener { run(Action.CHECK) { Result.Of(enroller.maintain(byUser = true)) } }
         renewButton.setOnClickListener { renewWifiNow() }
-        setupWpa3.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean(NetworkPrefs.WPA3, checked).apply()
-        }
         setupField.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -155,7 +156,6 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        setupWpa3.isChecked = prefs.getBoolean(NetworkPrefs.WPA3, false)
         refresh()
     }
 
@@ -202,6 +202,9 @@ class MainActivity : Activity() {
             setupField.setText("")
         }
         val stopped = state?.problem == Problem.NEEDS_SETUP || state?.problem == Problem.DISABLED
+        // A new setup starts from the current network's security mode.
+        if (!setupWpa3Shown && state != null) setupWpa3.isChecked = state.wpa3
+        setupWpa3Shown = true
         if (state == null || stopped) screen.setupRequested = false
         setupCard.visibility = if (state == null || stopped || screen.setupRequested) View.VISIBLE else View.GONE
         setupTitle.setText(if (state == null) R.string.setup_title else R.string.setup_again_title)
@@ -298,7 +301,7 @@ class MainActivity : Activity() {
         val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
         state.profile?.let {
             val security = getString(
-                if (prefs.getBoolean(NetworkPrefs.WPA3, false)) R.string.security_wpa3 else R.string.security_wpa2_wpa3,
+                if (state.wpa3) R.string.security_wpa3 else R.string.security_wpa2_wpa3,
             )
             detail(R.string.detail_network, "${quotedSsid(state)}\n$security")
         }
@@ -490,7 +493,6 @@ class MainActivity : Activity() {
             return
         }
         if (screen.busy || screen.pendingSetup != null) return
-        prefs.edit().putBoolean(NetworkPrefs.WPA3, setupWpa3.isChecked).apply()
         // Asked for before the first request: the app can't tell whether the
         // server is on the local network, and a blocked connection only times
         // out. Setup goes ahead whatever the answer.
@@ -505,10 +507,12 @@ class MainActivity : Activity() {
 
     private fun startSetup(link: SetupUri) {
         val app = applicationContext
+        // Applies only to this setup; the enrollment keeps it.
+        val wpa3 = setupWpa3.isChecked
         run(Action.SETUP) {
             val before = runCatching { enroller.state()?.deviceAlias }.getOrNull()
             try {
-                val outcome = enroller.setup(link)
+                val outcome = enroller.setup(link, wpa3)
                 scheduleQuietly { Jobs.scheduleDaily(app) }
                 Result.Of(outcome)
             } finally {

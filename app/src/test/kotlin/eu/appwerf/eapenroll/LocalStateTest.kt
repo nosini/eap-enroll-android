@@ -3,6 +3,7 @@ package eu.appwerf.eapenroll
 import java.util.Date
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -58,6 +59,35 @@ class LocalStateTest {
         assertEquals(keys.created.last().public, state.deviceChain[0].publicKey)
         assertEquals(setOf(state.deviceAlias), keys.keys.keys)
         assertTrue(leftover !in keys.keys)
+    }
+
+    @Test
+    fun securityModeChosenAtSetupStaysWithTheEnrollment() {
+        val profile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert))
+        server.answer = {
+            when (it.path) {
+                "device/simpleenroll" -> FakeEstServer.issue(it, deviceCa, "alice")
+                "wifi/profile" -> FakeEstServer.profile(profile)
+                "wifi/simpleenroll" -> FakeEstServer.issue(it, wifiCa, "alice")
+                else -> FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+        val wifi = RecordingWifi()
+        val enroller = Enroller(keys, wifi, store, clock = { now })
+        assertEquals(Enroller.Outcome.OK, enroller.setup(link, wpa3 = true))
+        assertTrue(store.load()!!.wpa3)
+        assertEquals(Enroller.Outcome.OK, enroller.maintain(renewWifi = true, byUser = true))
+        assertEquals(listOf(true, true), wifi.installs.map { it.wpa3 })
+    }
+
+    @Test
+    fun stateStoredWithoutSecurityModeTakesTheGivenOne() {
+        val state = enrolled()
+        val stored = state.copy(wpa3 = true).toJson()
+        assertTrue(EnrollmentState.parse(stored.toString(), wpa3 = false).wpa3)
+        stored.remove("wpa3")
+        assertTrue(EnrollmentState.parse(stored.toString(), wpa3 = true).wpa3)
+        assertFalse(EnrollmentState.parse(stored.toString()).wpa3)
     }
 
     @Test

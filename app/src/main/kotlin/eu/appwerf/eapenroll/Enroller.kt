@@ -39,7 +39,8 @@ interface DeviceKeys {
  * one. Throws [WifiInstallException] if the system won't take it.
  */
 fun interface WifiInstaller {
-    fun install(profile: WifiProfile, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>)
+    /** [wpa3]: WPA3-Enterprise only, otherwise WPA2/WPA3-Enterprise. */
+    fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>)
 
     /** Throws [WifiInstallException] if [install] can't work now, e.g. while the user disallows Wi-Fi control. */
     fun checkAllowed() {}
@@ -82,6 +83,8 @@ data class EnrollmentState(
     /** The device credential before the last renewal; deleted once the new one has been used. */
     val previousDeviceAlias: String? = null,
     val profile: WifiProfile? = null,
+    /** The network is WPA3-Enterprise only; chosen at setup. */
+    val wpa3: Boolean = false,
     /** The certificate in the current network suggestion, issuing CAs after it. */
     val wifiChain: List<X509Certificate>? = null,
     val wifiInstalledAt: Long = 0,
@@ -103,6 +106,7 @@ data class EnrollmentState(
         put("device_chain", Pem.encodeChain(deviceChain))
         previousDeviceAlias?.let { put("previous_device_alias", it) }
         profile?.let { put("profile", Profiles.toJson(it)) }
+        put("wpa3", wpa3)
         wifiChain?.let { put("wifi_chain", Pem.encodeChain(it)) }
         put("wifi_installed_at", wifiInstalledAt)
         put("confirm_pending", confirmPending)
@@ -115,20 +119,24 @@ data class EnrollmentState(
     }
 
     companion object {
-        /** Reads a stored state; throws [UnreadableStateException] if it can't. */
-        fun parse(json: String): EnrollmentState = try {
-            fromJson(JSONObject(json))
+        /**
+         * Reads a stored state; throws [UnreadableStateException] if it
+         * can't. [wpa3] is used for a state stored without it.
+         */
+        fun parse(json: String, wpa3: Boolean = false): EnrollmentState = try {
+            fromJson(JSONObject(json), wpa3)
         } catch (e: Exception) {
             throw UnreadableStateException(e)
         }
 
-        fun fromJson(json: JSONObject) = EnrollmentState(
+        fun fromJson(json: JSONObject, wpa3: Boolean = false) = EnrollmentState(
             serverUrl = json.getString("server_url"),
             caFingerprint = json.getString("ca_fingerprint"),
             deviceAlias = json.getString("device_alias"),
             deviceChain = Pem.certificates(json.getString("device_chain").toByteArray()),
             previousDeviceAlias = json.optStringOrNull("previous_device_alias"),
             profile = json.optJSONObject("profile")?.let { Profiles.fromJson(it) },
+            wpa3 = json.optBoolean("wpa3", wpa3),
             wifiChain = json.optStringOrNull("wifi_chain")?.let { Pem.certificates(it.toByteArray()) },
             wifiInstalledAt = json.optLong("wifi_installed_at"),
             confirmPending = json.optBoolean("confirm_pending"),
@@ -187,10 +195,11 @@ class Enroller(
 
     /**
      * Enrolls the device with the code from [link], then gets the first
-     * Wi-Fi certificate. Throws if the device credential can't be obtained;
-     * a failure after that is recorded in the state and retried by [maintain].
+     * Wi-Fi certificate, for a WPA3-Enterprise-only network if [wpa3].
+     * Throws if the device credential can't be obtained; a failure after
+     * that is recorded in the state and retried by [maintain].
      */
-    fun setup(link: SetupUri): Outcome = synchronized(LOCK) {
+    fun setup(link: SetupUri, wpa3: Boolean = false): Outcome = synchronized(LOCK) {
         log("Setting up with ${link.serverUrl}")
         closeClient()
         // The server checks attestation against the code as sent in the
@@ -205,7 +214,7 @@ class Enroller(
             }
             checkIssued(chain, keyPair.public)
             // Replaces whatever was stored, even a state that can't be read.
-            store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain))
+            store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain, wpa3 = wpa3))
             chain
         } catch (e: Exception) {
             keys.delete(alias)
@@ -567,7 +576,7 @@ class Enroller(
         val wifiIdentity = Certs.commonName(chain[0])
         check(wifiIdentity.isNotEmpty()) { "The Wi-Fi certificate has no common name" }
         try {
-            wifi.install(profile, wifiIdentity, keyPair.private, Certs.withoutRoots(chain))
+            wifi.install(profile, state.wpa3, wifiIdentity, keyPair.private, Certs.withoutRoots(chain))
         } catch (e: WifiInstallException) {
             throw e
         } catch (e: Exception) {

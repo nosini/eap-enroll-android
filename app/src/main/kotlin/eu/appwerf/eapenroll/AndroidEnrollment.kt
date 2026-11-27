@@ -133,8 +133,13 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
 /** Keeps the enrollment state as JSON in private preferences (backups are off). */
 class PrefsStateStore(context: Context) : StateStore {
     private val prefs = context.getSharedPreferences("enrollment", Context.MODE_PRIVATE)
+    private val settings = context.getSharedPreferences(NetworkPrefs.PREFS, Context.MODE_PRIVATE)
 
-    override fun load(): EnrollmentState? = prefs.getString(KEY, null)?.let(EnrollmentState::parse)
+    // A state stored without the security mode takes the one the network
+    // settings had, which the app used for it.
+    override fun load(): EnrollmentState? = prefs.getString(KEY, null)?.let {
+        EnrollmentState.parse(it, wpa3 = settings.getBoolean(NetworkPrefs.WPA3, false))
+    }
 
     override fun save(state: EnrollmentState?) {
         val editor = prefs.edit()
@@ -154,7 +159,6 @@ class PrefsStateStore(context: Context) : StateStore {
  */
 class SuggestionInstaller(private val context: Context, private val log: (String) -> Unit = {}) : WifiInstaller {
     private val wifi = context.getSystemService(WifiManager::class.java)
-    private val settings = context.getSharedPreferences(NetworkPrefs.PREFS, Context.MODE_PRIVATE)
 
     /**
      * Wi-Fi refuses suggestions while the user disallows the app's Wi-Fi
@@ -174,12 +178,12 @@ class SuggestionInstaller(private val context: Context, private val log: (String
         }
     }
 
-    override fun install(profile: WifiProfile, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
+    override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
         val network = NetworkSettings(
             ssid = profile.ssid,
             identity = identity,
             serverDomain = profile.serverDomain,
-            wpa3 = settings.getBoolean(NetworkPrefs.WPA3, false),
+            wpa3 = wpa3,
             caCertificates = profile.serverCaCertificates,
         )
         val suggestion = WifiSetup.suggestion(network, privateKey, chain, notifyOnConnect = true)
@@ -205,7 +209,7 @@ private const val WIFI_CONTROL_OFF = "The app may not change Wi-Fi networks. " +
     "Allow it under Settings > Apps > Special app access > Wi-Fi control, then tap \"Check now\"."
 private const val ADMIN_RESTRICTED = "The device's administrator doesn't allow adding Wi-Fi networks."
 
-/** Shared preference names of the network settings form. */
+/** Shared preference names of manual setup's network settings form. */
 object NetworkPrefs {
     const val PREFS = "settings"
     const val WPA3 = "wpa3"

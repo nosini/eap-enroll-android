@@ -100,9 +100,11 @@ attestation, and only then uses the code up:
 | 403 `user_disabled`, 429 | Used up; a new one is needed. |
 | Other 5xx | May have been used up: try again, and a 401 then means it was. |
 
-Only the WPA2/WPA3 choice stays a setting in the app, because the profile
+Only the WPA2/WPA3 choice is made in the app, because the profile
 doesn't say whether the network is WPA3-Enterprise only (see
-[Proposals for the server](#proposals-for-the-server)).
+[Proposals for the server](#proposals-for-the-server)). It is chosen at
+setup and stored with the enrollment, so every renewal uses it; manual
+setup has its own switch, which doesn't affect it.
 
 ## Renewal
 

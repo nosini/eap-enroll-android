@@ -80,7 +80,7 @@ class MemoryStore : StateStore {
     }
 }
 
-class Install(val profile: WifiProfile, val identity: String, val key: PrivateKey, val chain: List<X509Certificate>)
+class Install(val profile: WifiProfile, val wpa3: Boolean, val identity: String, val key: PrivateKey, val chain: List<X509Certificate>)
 
 class RecordingWifi : WifiInstaller {
     val installs = ArrayList<Install>()
@@ -91,9 +91,9 @@ class RecordingWifi : WifiInstaller {
     /** Thrown by [checkAllowed], like Wi-Fi control turned off. */
     var notAllowed: WifiInstallException? = null
 
-    override fun install(profile: WifiProfile, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
+    override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
         installFailure?.let { throw it }
-        installs += Install(profile, identity, privateKey, chain)
+        installs += Install(profile, wpa3, identity, privateKey, chain)
     }
 
     override fun checkAllowed() {

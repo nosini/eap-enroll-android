@@ -51,7 +51,8 @@ Releases are signed with this certificate (check with
    with it filled in. Otherwise copy the link, open EAP Enroll and tap
    **Paste link**.
 3. If the network is WPA3-Enterprise only, turn on **WPA3-Enterprise only
-   network**. The server doesn't tell the app this.
+   network**. The server doesn't tell the app this. The choice stays with
+   the enrollment; changing it takes a new setup.
 4. Tap **Set up**. The app gets its device credential, the network's
    settings and the first Wi-Fi certificate, and adds the network to Wi-Fi.
 5. Android asks whether to allow the suggested network. Allow it. The phone

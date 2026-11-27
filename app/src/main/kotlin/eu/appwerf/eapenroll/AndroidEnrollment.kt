@@ -21,7 +21,6 @@ import java.security.ProviderException
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.util.UUID
-import org.json.JSONObject
 
 /**
  * Device credential keys in the Android Keystore: EC P-256, non-exportable,
@@ -88,7 +87,7 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
 
     override fun keyPair(alias: String): KeyPair {
         val entry = keyStore().getEntry(alias, null) as? KeyStore.PrivateKeyEntry
-            ?: throw IllegalStateException("Device key $alias is missing")
+            ?: throw MissingDeviceKeyException(alias)
         return KeyPair(entry.certificate.publicKey, entry.privateKey)
     }
 
@@ -100,8 +99,7 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
         keyStore().deleteEntry(alias)
     }
 
-    /** Deletes device keys that aren't in [keep], e.g. left over from an interrupted setup. */
-    fun deleteOthers(keep: Set<String>) {
+    override fun deleteOthers(keep: Set<String>) {
         val store = keyStore()
         store.aliases().toList().filter { it.startsWith(PREFIX) && it !in keep }.forEach { store.deleteEntry(it) }
     }
@@ -136,8 +134,7 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
 class PrefsStateStore(context: Context) : StateStore {
     private val prefs = context.getSharedPreferences("enrollment", Context.MODE_PRIVATE)
 
-    override fun load(): EnrollmentState? =
-        prefs.getString(KEY, null)?.let { EnrollmentState.fromJson(JSONObject(it)) }
+    override fun load(): EnrollmentState? = prefs.getString(KEY, null)?.let(EnrollmentState::parse)
 
     override fun save(state: EnrollmentState?) {
         val editor = prefs.edit()

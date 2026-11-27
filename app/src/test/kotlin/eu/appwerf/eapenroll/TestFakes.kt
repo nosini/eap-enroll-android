@@ -19,7 +19,6 @@ import java.util.Collections
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
-import org.json.JSONObject
 
 /**
  * Device keys in memory. Keys made with a challenge get a stand-in
@@ -55,7 +54,7 @@ class MemoryKeys : DeviceKeys {
         return alias
     }
 
-    override fun keyPair(alias: String) = keys[alias] ?: throw IllegalStateException("no key $alias")
+    override fun keyPair(alias: String) = keys[alias] ?: throw MissingDeviceKeyException(alias)
 
     override fun attestation(alias: String): List<ByteArray>? = attestations[alias]
 
@@ -63,13 +62,17 @@ class MemoryKeys : DeviceKeys {
         keys.remove(alias)
         attestations.remove(alias)
     }
+
+    override fun deleteOthers(keep: Set<String>) {
+        (keys.keys - keep).forEach(::delete)
+    }
 }
 
 /** Stores JSON, so every step also goes through the state serialisation. */
 class MemoryStore : StateStore {
     var json: String? = null
 
-    override fun load() = json?.let { EnrollmentState.fromJson(JSONObject(it)) }
+    override fun load() = json?.let(EnrollmentState::parse)
 
     override fun save(state: EnrollmentState?) {
         json = state?.toJson()?.toString()

@@ -22,12 +22,16 @@ interface DeviceKeys {
      */
     fun create(challenge: ByteArray? = null): String
 
+    /** Throws [MissingDeviceKeyException] if there is no key [alias]. */
     fun keyPair(alias: String): KeyPair
 
     /** The key's attestation chain (DER, leaf first), or null if it has none. */
     fun attestation(alias: String): List<ByteArray>?
 
     fun delete(alias: String)
+
+    /** Deletes the device keys not in [keep], e.g. left over from an interrupted setup or renewal. */
+    fun deleteOthers(keep: Set<String>)
 }
 
 /**
@@ -49,6 +53,7 @@ fun interface WifiInstaller {
 class WifiInstallException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 interface StateStore {
+    /** Throws [UnreadableStateException] if a stored state can't be read. */
     fun load(): EnrollmentState?
 
     fun save(state: EnrollmentState?)
@@ -110,6 +115,13 @@ data class EnrollmentState(
     }
 
     companion object {
+        /** Reads a stored state; throws [UnreadableStateException] if it can't. */
+        fun parse(json: String): EnrollmentState = try {
+            fromJson(JSONObject(json))
+        } catch (e: Exception) {
+            throw UnreadableStateException(e)
+        }
+
         fun fromJson(json: JSONObject) = EnrollmentState(
             serverUrl = json.getString("server_url"),
             caFingerprint = json.getString("ca_fingerprint"),
@@ -192,17 +204,15 @@ class Enroller(
                 it.enrollDevice(link.code, Csr.create(keyPair, "eap-enroll"), keys.attestation(alias))
             }
             checkIssued(chain, keyPair.public)
+            // Replaces whatever was stored, even a state that can't be read.
+            store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain))
             chain
         } catch (e: Exception) {
             keys.delete(alias)
             throw e
         }
-        val old = store.load()
-        store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain))
-        old?.let {
-            if (it.deviceAlias != alias) keys.delete(it.deviceAlias)
-            it.previousDeviceAlias?.let(keys::delete)
-        }
+        // The previous enrollment's keys, and any left over.
+        deleteOtherKeys(setOf(alias))
         log("Device credential for ${Certs.commonName(chain[0])}, valid until ${chain[0].notAfter}")
         try {
             maintainLocked(renewWifi = true, byUser = true)
@@ -220,6 +230,9 @@ class Enroller(
         synchronized(LOCK) {
             try {
                 maintainLocked(renewWifi, byUser)
+            } catch (e: UnreadableStateException) {
+                log(Errors.describe(e))
+                Outcome.STOPPED
             } finally {
                 closeClient()
             }
@@ -244,13 +257,22 @@ class Enroller(
         true
     }
 
-    /** Deletes the device keys and the stored state. Removing the suggestion is up to the caller. */
+    /**
+     * Deletes the stored state and the device keys, also when the state
+     * can't be read. Removing the suggestion is up to the caller.
+     */
     fun forget() = synchronized(LOCK) {
-        store.load()?.let {
-            keys.delete(it.deviceAlias)
-            it.previousDeviceAlias?.let(keys::delete)
-        }
         store.save(null)
+        keys.deleteOthers(emptySet())
+    }
+
+    /** Best effort: a key that can't be deleted now is deleted by a later check. */
+    private fun deleteOtherKeys(keep: Set<String>) {
+        try {
+            keys.deleteOthers(keep)
+        } catch (e: Exception) {
+            log("Deleting unused device keys failed: ${Errors.describe(e)}")
+        }
     }
 
     /**
@@ -273,6 +295,8 @@ class Enroller(
             log("The server asked for no requests before ${Date(state.waitUntil)}")
             return Outcome.WAIT
         }
+        // Keys of a setup or renewal that was interrupted before its state was stored.
+        deleteOtherKeys(setOfNotNull(state.deviceAlias, state.previousDeviceAlias))
         try {
             // Before anything else, such as making a key for a renewal that can't work.
             checkNotExpired(state.deviceChain[0])
@@ -333,6 +357,10 @@ class Enroller(
             }
             return refused(state, e)
         } catch (e: CredentialExpiredException) {
+            fail(state, e, Problem.NEEDS_SETUP)
+            return Outcome.STOPPED
+        } catch (e: MissingDeviceKeyException) {
+            // Without the key the credential can't be used, nor renewed.
             fail(state, e, Problem.NEEDS_SETUP)
             return Outcome.STOPPED
         } catch (e: WifiInstallException) {
@@ -627,6 +655,13 @@ class Enroller(
 class CredentialExpiredException(val notAfter: Date) :
     GeneralSecurityException("The device credential expired on $notAfter")
 
+/** The stored enrollment state can't be read; a new setup replaces it. */
+class UnreadableStateException(cause: Exception) :
+    IllegalStateException("The stored enrollment can't be read: ${cause.javaClass.simpleName}: ${cause.message}", cause)
+
+/** The device credential's key isn't in the keystore any more. Needs a new setup link. */
+class MissingDeviceKeyException(alias: String) : GeneralSecurityException("Device key $alias is missing")
+
 /** The phone couldn't make a new device key or its CSR (Keystore or StrongBox errors). */
 class NewDeviceKeyException(cause: Exception) :
     GeneralSecurityException("Couldn't make a new device key: ${cause.message}", cause)
@@ -664,7 +699,7 @@ object Errors {
         if (e is EstException) {
             serverHint(e)?.let { return "$text. $it" }
         }
-        if (e is CredentialExpiredException) {
+        if (e is CredentialExpiredException || e is MissingDeviceKeyException || e is UnreadableStateException) {
             return "$text. This phone needs a new setup link."
         }
         // socket() fails with EPERM when the app may not use the network:

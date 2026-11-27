@@ -145,6 +145,12 @@ restarts, needs a network) does whatever is due:
   The server refuses an expired one in the TLS handshake, which would
   otherwise look like a network error and be retried forever; an expired
   credential needs a new setup link.
+- The same goes for a stored enrollment the app can't read and for a
+  device credential whose key is gone from the Keystore: the app stops
+  and asks for a new setup link. A setup replaces the stored state, even
+  an unreadable one, and deletes all other device keys. Every check also
+  deletes device keys left behind by a setup or renewal that was
+  interrupted before its state was stored.
 - A failed request is retried by the next daily run, and a run started
   from the app or after a connection is retried with backoff.
 - A Wi-Fi certificate that Android refuses to install is left to the

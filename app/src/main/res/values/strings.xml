@@ -30,6 +30,7 @@
 
     <!-- Status -->
     <string name="status_working">Working…</string>
+    <string name="status_unreadable_title">Enrollment data unreadable</string>
     <string name="status_ok_title">Wi-Fi is set up</string>
     <string name="status_ok_text">Network %1$s. The certificate renews automatically from %2$s.</string>
     <string name="status_unconfirmed_title">Certificate not confirmed yet</string>

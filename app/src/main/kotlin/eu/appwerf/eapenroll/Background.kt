@@ -93,23 +93,24 @@ object Jobs {
 class RenewJobService : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         Thread {
-            val enroller = Enrollment.enroller(this)
-            val outcome = try {
-                enroller.maintain()
+            var outcome = Enroller.Outcome.RETRY
+            try {
+                val enroller = Enrollment.enroller(this)
+                outcome = enroller.maintain()
+                Log.i(Enrollment.TAG, "Background check: $outcome")
+                if (outcome == Enroller.Outcome.WAIT) {
+                    try {
+                        enroller.state()?.let { Jobs.runAt(this, it.waitUntil) }
+                    } catch (e: Exception) {
+                        Log.w(Enrollment.TAG, "Scheduling the check after the wait failed", e)
+                    }
+                }
+                Notifier.update(this)
             } catch (e: Exception) {
                 Log.w(Enrollment.TAG, "Background renewal failed", e)
-                Enroller.Outcome.RETRY
+            } finally {
+                jobFinished(params, outcome == Enroller.Outcome.RETRY && Jobs.isSoon(params))
             }
-            Log.i(Enrollment.TAG, "Background check: $outcome")
-            if (outcome == Enroller.Outcome.WAIT) {
-                try {
-                    enroller.state()?.let { Jobs.runAt(this, it.waitUntil) }
-                } catch (e: Exception) {
-                    Log.w(Enrollment.TAG, "Scheduling the check after the wait failed", e)
-                }
-            }
-            Notifier.update(this)
-            jobFinished(params, outcome == Enroller.Outcome.RETRY && Jobs.isSoon(params))
         }.start()
         return true
     }
@@ -158,9 +159,22 @@ object Notifier {
     private const val CHANNEL = "renewal"
     private const val ID = 1
 
+    /** Never throws: a failure to read the state or notify is only logged. */
     fun update(context: Context) {
+        try {
+            show(context)
+        } catch (e: Exception) {
+            Log.w(Enrollment.TAG, "Updating the notification failed", e)
+        }
+    }
+
+    private fun show(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        val text = attentionText(Enrollment.enroller(context).state(), System.currentTimeMillis())
+        val text = try {
+            attentionText(Enrollment.enroller(context).state(), System.currentTimeMillis())
+        } catch (e: UnreadableStateException) {
+            UNREADABLE
+        }
         if (text == null) {
             manager.cancel(ID)
             return
@@ -184,6 +198,9 @@ object Notifier {
         // Without the notification permission (Android 13+) this is dropped silently.
         manager.notify(ID, notification)
     }
+
+    const val UNREADABLE = "The app can't read its stored enrollment, so it can't renew the Wi-Fi certificate. " +
+        "Set the phone up again with a new link."
 
     /** What needs the user's attention, or null. */
     fun attentionText(state: EnrollmentState?, now: Long): String? {

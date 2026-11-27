@@ -1,0 +1,127 @@
+package eu.appwerf.eapenroll
+
+import java.util.Date
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** Stored state or keys that are broken or left over. */
+class LocalStateTest {
+    private val server = FakeEstServer()
+    private val keys = MemoryKeys()
+    private val store = MemoryStore()
+    private val now = System.currentTimeMillis()
+    private val day = 86_400_000L
+    private val deviceCa = TestPki.root("Device CA")
+    private val wifiCa = TestPki.root("Wi-Fi CA")
+    private val link = SetupUri.parse(
+        "eapenroll://setup?v=1&url=${server.url}&ca=${server.caFingerprint}&code=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+    )
+
+    @After
+    fun stop() = server.close()
+
+    private fun enroller(store: StateStore = this.store) = Enroller(keys, RecordingWifi(), store, log = { println(it) }, clock = { now })
+
+    /** The server issues device credentials and is unavailable otherwise. */
+    private fun issuingDeviceCredentials() {
+        server.answer = {
+            if (it.path == "device/simpleenroll") {
+                FakeEstServer.issue(it, deviceCa, "alice")
+            } else {
+                FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+    }
+
+    /** Enrolled, with nothing due. */
+    private fun enrolled(): EnrollmentState {
+        val alias = keys.create()
+        val device = TestPki.leaf(deviceCa, "alice", keys.keyPair(alias), Date(now - day), Date(now + 365 * day))
+        val wifi = TestPki.leaf(wifiCa, "alice", notBefore = Date(now - day), notAfter = Date(now + 59 * day))
+        val state = EnrollmentState(server.url, server.caFingerprint, alias, listOf(device, deviceCa.cert), wifiChain = listOf(wifi, wifiCa.cert))
+        store.save(state)
+        return state
+    }
+
+    @Test
+    fun setupReplacesAnUnreadableState() {
+        val leftover = keys.create()
+        store.json = "{corrupted"
+        issuingDeviceCredentials()
+        // The Wi-Fi certificate fails; the device credential is stored all the same.
+        assertEquals(Enroller.Outcome.RETRY, enroller().setup(link))
+        val state = store.load()!!
+        assertEquals(keys.created.last().public, state.deviceChain[0].publicKey)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+        assertTrue(leftover !in keys.keys)
+    }
+
+    @Test
+    fun setupReplacesThePreviousEnrollmentsKeys() {
+        val old = enrolled()
+        issuingDeviceCredentials()
+        enroller().setup(link)
+        val state = store.load()!!
+        assertTrue(state.deviceAlias != old.deviceAlias)
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+    }
+
+    @Test
+    fun unreadableStateStopsChecksAndCanBeRemoved() {
+        enrolled()
+        store.json = "{corrupted"
+        val enroller = enroller()
+        assertThrows(UnreadableStateException::class.java) { enroller.state() }
+        assertEquals(Enroller.Outcome.STOPPED, enroller.maintain(byUser = true))
+        assertTrue(server.requests.isEmpty())
+        assertTrue(Notifier.UNREADABLE.contains("new link"))
+
+        enroller.forget()
+        assertNull(store.json)
+        assertTrue(keys.keys.isEmpty())
+    }
+
+    @Test
+    fun unknownProblemMakesTheStateUnreadable() {
+        enrolled()
+        store.json = store.json!!.replace("\"server_url\"", "\"problem\":\"SOMETHING_NEW\",\"server_url\"")
+        assertThrows(UnreadableStateException::class.java) { store.load() }
+    }
+
+    @Test
+    fun keyOfAFailedSaveIsDeleted() {
+        val failing = object : StateStore {
+            override fun load(): EnrollmentState? = null
+            override fun save(state: EnrollmentState?) = throw IllegalStateException("Could not save the enrollment state")
+        }
+        issuingDeviceCredentials()
+        assertThrows(IllegalStateException::class.java) { enroller(failing).setup(link) }
+        assertTrue(keys.keys.isEmpty())
+    }
+
+    @Test
+    fun missingDeviceKeyNeedsSetup() {
+        val state = enrolled()
+        keys.delete(state.deviceAlias)
+        server.answer = { FakeEstServer.Answer(503, "unavailable\n") }
+        assertEquals(Enroller.Outcome.STOPPED, enroller().maintain(renewWifi = true, byUser = true))
+        assertTrue(server.requests.isEmpty())
+        val after = store.load()!!
+        assertEquals(Problem.NEEDS_SETUP, after.problem)
+        assertTrue(after.lastError!!.contains("new setup link"))
+    }
+
+    @Test
+    fun leftoverKeysAreDeleted() {
+        val state = enrolled()
+        val leftover = keys.create()
+        assertEquals(Enroller.Outcome.OK, enroller().maintain())
+        assertTrue(server.requests.isEmpty())
+        assertEquals(setOf(state.deviceAlias), keys.keys.keys)
+        assertTrue(leftover !in keys.keys)
+    }
+}

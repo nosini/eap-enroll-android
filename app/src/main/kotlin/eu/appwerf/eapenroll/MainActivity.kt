@@ -63,7 +63,7 @@ class MainActivity : Activity() {
     private lateinit var details: LinearLayout
 
     /** What the screen shows; read on the worker, rendered on the main thread. */
-    private class Snapshot(val state: EnrollmentState?, val deviceKey: String?, val now: Long)
+    private class Snapshot(val state: EnrollmentState?, val deviceKey: String?, val now: Long, val unreadable: Boolean = false)
 
     private var snapshot: Snapshot? = null
     private var approval: Int? = null
@@ -183,7 +183,7 @@ class MainActivity : Activity() {
                 Snapshot(state, key, System.currentTimeMillis())
             } catch (e: Exception) {
                 AppLog.add("Enrollment state unreadable: ${Errors.describe(e)}")
-                Snapshot(null, null, System.currentTimeMillis())
+                Snapshot(null, null, System.currentTimeMillis(), unreadable = true)
             }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
@@ -206,13 +206,16 @@ class MainActivity : Activity() {
         setupCard.visibility = if (state == null || stopped || screen.setupRequested) View.VISIBLE else View.GONE
         setupTitle.setText(if (state == null) R.string.setup_title else R.string.setup_again_title)
 
-        statusCard.visibility = if (state != null || busy || message != null) View.VISIBLE else View.GONE
+        statusCard.visibility = if (state != null || snap.unreadable || busy || message != null) View.VISIBLE else View.GONE
         detailsCard.visibility = if (state != null) View.VISIBLE else View.GONE
         statusActions.visibility = if (state != null && !stopped) View.VISIBLE else View.GONE
         if (state != null) {
             statusHeader.visibility = View.VISIBLE
             renderStatus(state, snap.now)
             renderDetails(state, snap.deviceKey)
+        } else if (snap.unreadable && !busy) {
+            statusHeader.visibility = View.VISIBLE
+            showStatus(Tone.ERROR, getString(R.string.status_unreadable_title), Notifier.UNREADABLE)
         } else {
             // Not enrolled: the card only carries progress and the last result.
             statusHeader.visibility = if (busy) View.VISIBLE else View.GONE
@@ -421,7 +424,7 @@ class MainActivity : Activity() {
         }
         menu.add(0, MENU_MANUAL, 2, R.string.menu_manual)
         menu.add(0, MENU_LOG, 3, R.string.menu_log)
-        if (state != null) menu.add(0, MENU_REMOVE, 4, R.string.menu_remove)
+        if (state != null || snapshot?.unreadable == true) menu.add(0, MENU_REMOVE, 4, R.string.menu_remove)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 MENU_WIFI -> startActivity(Intent(Settings.Panel.ACTION_WIFI))
@@ -565,8 +568,11 @@ class MainActivity : Activity() {
                 val advice = if (action == Action.SETUP) Enroller.setupLinkAdvice(e)?.let { "\n\n$it" } else null
                 app.getString(R.string.result_failed, Errors.describe(e)) + advice.orEmpty()
             }
-            Notifier.update(app)
-            screen.finish(text)
+            try {
+                Notifier.update(app)
+            } finally {
+                screen.finish(text)
+            }
         }
     }
 
@@ -601,7 +607,6 @@ class MainActivity : Activity() {
         val app = applicationContext
         run(Action.REMOVE) {
             enroller.forget()
-            deviceKeys.deleteOthers(emptySet())
             Jobs.cancelAll(app)
             val status = wifi.removeNetworkSuggestions(emptyList())
             AppLog.add("Enrollment removed; suggestions removed: ${WifiSetup.statusName(status)}")

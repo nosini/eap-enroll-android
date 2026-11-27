@@ -135,9 +135,21 @@ object Jobs {
         context.getSystemService(JobScheduler::class.java).schedule(job)
     }
 
+    /**
+     * Whether a check that ended with [outcome] should make sure the daily
+     * job is scheduled: the enrollment is in use and has no problem.
+     */
+    fun dailyNeeded(outcome: Enroller.Outcome, problem: Problem?): Boolean =
+        outcome != Enroller.Outcome.STOPPED && outcome != Enroller.Outcome.NOT_ENROLLED && problem == null
+
     /** Schedules what a check needs next ([followUpFor]); [state] is the state after it. */
     fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?, jobId: Int? = null) {
-        when (followUpFor(outcome, jobId, state?.problem)) {
+        val problem = state?.problem
+        // A check that got through schedules the daily job again, e.g. after
+        // a disabled account was cleared while no activity was open to
+        // refresh the screen.
+        if (dailyNeeded(outcome, problem)) scheduleDaily(context)
+        when (followUpFor(outcome, jobId, problem)) {
             FollowUp.NONE -> {}
             FollowUp.SOON -> runSoon(context)
             FollowUp.AFTER_WAIT -> state?.let { runAt(context, it.waitUntil) }

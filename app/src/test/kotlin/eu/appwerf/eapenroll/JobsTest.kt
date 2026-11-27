@@ -3,6 +3,8 @@ package eu.appwerf.eapenroll
 import eu.appwerf.eapenroll.Enroller.Outcome
 import eu.appwerf.eapenroll.Jobs.FollowUp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JobsTest {
@@ -25,6 +27,17 @@ class JobsTest {
         // Backoff, and the next day.
         assertEquals(FollowUp.NONE, Jobs.followUpFor(Outcome.RETRY, Jobs.SOON))
         assertEquals(FollowUp.NONE, Jobs.followUpFor(Outcome.RETRY, Jobs.DAILY))
+    }
+
+    @Test
+    fun aCheckInUseKeepsTheDailyJob() {
+        for (outcome in listOf(Outcome.OK, Outcome.RETRY, Outcome.WAIT, Outcome.LATER)) {
+            assertTrue(outcome.name, Jobs.dailyNeeded(outcome, null))
+            assertFalse(outcome.name, Jobs.dailyNeeded(outcome, Problem.USER_DISABLED))
+        }
+        // Nothing to do daily without an enrollment, or while stopped.
+        assertFalse(Jobs.dailyNeeded(Outcome.STOPPED, null))
+        assertFalse(Jobs.dailyNeeded(Outcome.NOT_ENROLLED, null))
     }
 
     @Test

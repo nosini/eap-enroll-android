@@ -169,7 +169,9 @@ restarts, needs a network) does whatever is due:
 - When the app stops (a new setup link is needed, or the device or the
   account is disabled), it cancels its background jobs, so neither checks
   nor the notification come back every day. A check by the user that gets
-  through, or a new setup, schedules them again.
+  through, or a new setup, schedules them again. Every check that ends with
+  no problem also makes sure the daily job is scheduled, so a check that
+  cleared a problem while no activity was open isn't left without it.
 - A Wi-Fi certificate that Android refuses to install is left to the
   daily check, since the server has issued it and requesting another soon
   would most likely only add another unconfirmed certificate. Before

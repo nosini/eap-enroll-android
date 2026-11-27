@@ -1,6 +1,7 @@
 package eu.appwerf.eapenroll
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
@@ -349,8 +350,23 @@ class ManualSetupActivity : Activity() {
     }
 
     private fun removeSuggestions() {
-        val status = wifi.removeNetworkSuggestions(emptyList())
-        show("Removed this app's networks: ${WifiSetup.statusName(status)}")
+        // state() may wait for a request that holds the enroller's lock.
+        Thread {
+            val enrolled = runCatching { Enrollment.enroller(this).state() != null }.getOrDefault(false)
+            runOnUiThread { confirmRemoveSuggestions(enrolled) }
+        }.start()
+    }
+
+    private fun confirmRemoveSuggestions(enrolled: Boolean) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.remove_networks_title)
+            .setMessage(if (enrolled) R.string.remove_networks_enrolled_text else R.string.remove_networks_text)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.remove) { _, _ ->
+                val status = wifi.removeNetworkSuggestions(emptyList())
+                show("Removed this app's networks: ${WifiSetup.statusName(status)}")
+            }
+            .show()
     }
 
     private fun deleteKey() {

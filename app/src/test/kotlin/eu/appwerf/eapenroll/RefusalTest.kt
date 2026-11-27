@@ -192,6 +192,22 @@ class RefusalTest {
     }
 
     @Test
+    fun nonsensicalRetryAfterTakesTheDefaultOrTheCap() {
+        for ((header, wait) in listOf(
+            "-120" to 15 * 60_000L,
+            "0" to 15 * 60_000L,
+            "120" to 120_000L,
+            Long.MAX_VALUE.toString() to 24 * 3_600_000L,
+        )) {
+            server.requests.clear()
+            store.save(store.load()!!.copy(waitUntil = 0))
+            answer(429, "Retry-After" to header)
+            assertEquals(header, Enroller.Outcome.WAIT, enroller.maintain())
+            assertEquals(header, now + wait, store.load()!!.waitUntil)
+        }
+    }
+
+    @Test
     fun disabledUserIsRetriedOnlyByTheUser() {
         answer(403, "Enroll-Error" to "user_disabled")
         assertEquals(Enroller.Outcome.STOPPED, enroller.maintain())
@@ -631,6 +647,10 @@ class AttestationHeaderTest {
         assertEquals("HTTP 403 (attestation_refused): key attestation refused", e.message)
         assertTrue(Errors.describe(e).contains("refused this phone's key attestation"))
         assertTrue(Errors.describe(EstException(429, "too many requests", 90)).contains("wait 2 minute"))
+        // Never a negative or overflowing hint; the server's own waits are
+        // positive and capped when they are read and stored.
+        assertFalse(Errors.describe(EstException(429, "too many requests", -120)).contains("-1 minute"))
+        assertTrue(Errors.describe(EstException(429, "too many requests", Long.MAX_VALUE)).contains("wait 1440 minute"))
         assertEquals("EstException: HTTP 500: internal error", Errors.describe(EstException(500, "internal error")))
         assertTrue(Errors.describe(java.net.SocketTimeoutException("connect timed out")).contains("Nearby devices"))
     }

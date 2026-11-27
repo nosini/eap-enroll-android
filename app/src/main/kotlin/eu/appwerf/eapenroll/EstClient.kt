@@ -183,7 +183,9 @@ class EstClient(
                 // hide the status and the headers.
                 val text = connection.errorStream?.use { Streams.readPrefix(it, MAX_ERROR_TEXT) }
                     ?.toString(Charsets.UTF_8)?.lineSequence()?.firstOrNull()?.take(200).orEmpty()
-                val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
+                // A zero or negative wait is no instruction; the app then
+                // uses its own default.
+                val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0 }
                 val reason = connection.getHeaderField("Enroll-Error")?.trim()?.takeIf { reasonPattern.matches(it) }
                 throw EstException(status, text.ifEmpty { connection.responseMessage ?: "error" }, retryAfter, reason)
             }

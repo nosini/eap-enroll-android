@@ -195,7 +195,7 @@ disabled device.
 | 403 `device_disabled`, `credential_reuse` | The device is disabled: stops; needs a new setup link. |
 | 403 `user_disabled` | The account is disabled: stops background checks. "Check now" tries again, since the account can be enabled again: it asks for `wifi/profile` first, and counts the account as enabled once the server has answered an authenticated request past its account check, even if the rest of the check fails. |
 | 403 `attestation_refused` | Only on device credential requests (for example an OS the server doesn't accept, or a security patch level that is too old). At setup the app shows it; at renewal the current credential still works, so the app keeps it and the daily check tries again with a new key, which passes once the phone is updated. |
-| 429 | Stores the time from `Retry-After` (15 minutes without one, at most a day) and sends nothing before it, not even for a check started by the user. A one-off job runs when the wait is over. |
+| 429 | Stores the time from `Retry-After` (15 minutes without one, or with a zero or negative one; at most a day) and sends nothing before it, not even for a check started by the user. A one-off job runs when the wait is over. |
 | 400 `bad_attestation`, 5xx, network errors | Retried later. |
 
 - A notification warns when less than a sixth of a certificate's lifetime

@@ -457,7 +457,7 @@ class Enroller(
             Outcome.STOPPED
         }
         e.status == 429 -> {
-            val seconds = (e.retryAfterSeconds ?: DEFAULT_WAIT_S).coerceIn(1, MAX_WAIT_S)
+            val seconds = (e.retryAfterSeconds?.takeIf { it > 0 } ?: DEFAULT_WAIT_S).coerceAtMost(MAX_WAIT_S)
             fail(state, e, null, waitUntil = clock() + seconds * 1000)
             Outcome.WAIT
         }
@@ -683,7 +683,7 @@ class Enroller(
 
         /** Waits for a 429 without (or with a nonsensical) Retry-After. */
         private const val DEFAULT_WAIT_S = 15 * 60L
-        private const val MAX_WAIT_S = 24 * 3600L
+        internal const val MAX_WAIT_S = 24 * 3600L
 
         private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
@@ -842,7 +842,8 @@ object Errors {
         e.reason == "credential_superseded" ->
             "The server says the connection used a replaced credential; the next check reconnects."
         e.status == 429 -> e.retryAfterSeconds?.let {
-            "The server asks to wait ${(it + 59) / 60} minute(s)."
+            // Clamped like the wait itself, so the hint never exceeds the cap.
+            "The server asks to wait ${(it.coerceIn(1, Enroller.MAX_WAIT_S) + 59) / 60} minute(s)."
         } ?: "The server asks to wait."
         else -> null
     }

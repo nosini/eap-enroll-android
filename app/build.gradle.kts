@@ -27,8 +27,8 @@ android {
         applicationId = "eu.appwerf.eapenroll"
         minSdk = 31
         targetSdk = 37
-        versionCode = 7
-        versionName = "0.3.2"
+        versionCode = 8
+        versionName = "0.4.0"
     }
 
     signingConfigs {

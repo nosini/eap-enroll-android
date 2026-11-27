@@ -64,7 +64,12 @@ jobs:
           cache: gradle
 
       - name: Install Android SDK packages
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;$BUILD_TOOLS" "platforms;$PLATFORM"'
+        run: |
+          set -euo pipefail
+          # sdkmanager refuses --install without the licenses, which a fresh
+          # image doesn't have yet.
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;$BUILD_TOOLS" "platforms;$PLATFORM"
 
       - name: Test and lint
         run: ./gradlew :app:testDebugUnitTest :app:lintRelease
@@ -103,7 +108,12 @@ jobs:
           java-version: '17.0.21'
 
       - name: Install Android SDK packages
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;$BUILD_TOOLS" "platforms;$PLATFORM"'
+        run: |
+          set -euo pipefail
+          # sdkmanager refuses --install without the licenses, which a fresh
+          # image doesn't have yet.
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;$BUILD_TOOLS" "platforms;$PLATFORM"
 
       - name: Decode signing key
         env:

@@ -137,10 +137,13 @@ object Jobs {
 
     /**
      * Whether a check that ended with [outcome] should make sure the daily
-     * job is scheduled: the enrollment is in use and has no problem.
+     * job is scheduled: there is an enrollment ([state], read after the
+     * check), it is in use and has no problem. A check that failed before
+     * the state could be read schedules nothing.
      */
-    fun dailyNeeded(outcome: Enroller.Outcome, problem: Problem?): Boolean =
-        outcome != Enroller.Outcome.STOPPED && outcome != Enroller.Outcome.NOT_ENROLLED && problem == null
+    fun dailyNeeded(outcome: Enroller.Outcome, state: EnrollmentState?): Boolean =
+        state != null && state.problem == null &&
+            outcome != Enroller.Outcome.STOPPED && outcome != Enroller.Outcome.NOT_ENROLLED
 
     /** Schedules what a check needs next ([followUpFor]); [state] is the state after it. */
     fun followUp(context: Context, outcome: Enroller.Outcome, state: EnrollmentState?, jobId: Int? = null) {
@@ -148,7 +151,7 @@ object Jobs {
         // A check that got through schedules the daily job again, e.g. after
         // a disabled account was cleared while no activity was open to
         // refresh the screen.
-        if (dailyNeeded(outcome, problem)) scheduleDaily(context)
+        if (dailyNeeded(outcome, state)) scheduleDaily(context)
         when (followUpFor(outcome, jobId, problem)) {
             FollowUp.NONE -> {}
             FollowUp.SOON -> runSoon(context)

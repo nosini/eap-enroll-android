@@ -31,12 +31,18 @@ class JobsTest {
 
     @Test
     fun aCheckInUseKeepsTheDailyJob() {
+        val state = EnrollmentState(
+            "https://enroll.example.org", "ab".repeat(32), "device-1",
+            listOf(TestPki.leaf(TestPki.root("Test CA"), "alice")),
+        )
         for (outcome in listOf(Outcome.OK, Outcome.RETRY, Outcome.WAIT, Outcome.LATER)) {
-            assertTrue(outcome.name, Jobs.dailyNeeded(outcome, null))
-            assertFalse(outcome.name, Jobs.dailyNeeded(outcome, Problem.USER_DISABLED))
+            assertTrue(outcome.name, Jobs.dailyNeeded(outcome, state))
+            assertFalse(outcome.name, Jobs.dailyNeeded(outcome, state.copy(problem = Problem.USER_DISABLED)))
+            // The check failed before the state could be read.
+            assertFalse(outcome.name, Jobs.dailyNeeded(outcome, null))
         }
-        // Nothing to do daily without an enrollment, or while stopped.
-        assertFalse(Jobs.dailyNeeded(Outcome.STOPPED, null))
+        // Nothing to do daily while stopped, or without an enrollment.
+        assertFalse(Jobs.dailyNeeded(Outcome.STOPPED, state))
         assertFalse(Jobs.dailyNeeded(Outcome.NOT_ENROLLED, null))
     }
 

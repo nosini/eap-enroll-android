@@ -176,9 +176,11 @@ class ManualSetupActivity : Activity() {
         val identity = prefs.getString("identity", "")!!
         check(identity.isNotEmpty()) { "Enter the username (EAP identity) first" }
         val replacing = vault.hasKey()
-        chainFile.delete()
         val curve = prefs.getString("curve", CURVE_P384)!!
+        // Replaces the stored key only once the new one is stored.
         val keyPair = vault.generate(curve)
+        // The certificate was for the previous key.
+        chainFile.delete()
         csrFile.writeText(Pem.encode("CERTIFICATE REQUEST", Csr.create(keyPair, identity)))
         val wrap = if (vault.lastWrapKeyInStrongBox == true) "StrongBox" else "TEE/software keystore"
         show(

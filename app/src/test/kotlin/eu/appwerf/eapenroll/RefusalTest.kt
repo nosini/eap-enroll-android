@@ -349,6 +349,27 @@ class RefusalTest {
     }
 
     @Test
+    fun malformedProfileIsRetried() {
+        wifiDue()
+        for (answer in listOf(
+            FakeEstServer.Answer(200, "<html>Proxy error</html>", mapOf("Content-Type" to "text/html")),
+            FakeEstServer.Answer(204),
+            FakeEstServer.Answer(200, "{\"ssid\":null}", mapOf("Content-Type" to "application/json")),
+            FakeEstServer.Answer(200, "{truncated", mapOf("Content-Type" to "application/json")),
+        )) {
+            server.requests.clear()
+            server.answer = { answer }
+            assertEquals(answer.body, Enroller.Outcome.RETRY, enroller.maintain())
+            // Nothing requested before the profile is known.
+            assertEquals(answer.body, listOf("wifi/profile"), server.requests.map { it.path })
+            val state = store.load()!!
+            assertTrue(answer.body, state.lastErrorAt == now && state.lastError != null)
+            store.save(state.copy(lastError = null, lastErrorAt = 0))
+        }
+        assertTrue(wifi.installs.isEmpty())
+    }
+
+    @Test
     fun failedInstallWaitsForTheDailyCheck() {
         wifiDue()
         val before = store.load()!!

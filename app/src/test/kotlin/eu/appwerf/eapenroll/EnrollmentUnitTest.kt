@@ -200,4 +200,31 @@ class StateJsonTest {
         val notCa = json.replace(Base64.getEncoder().encodeToString(root.cert.encoded), Base64.getEncoder().encodeToString(leaf.encoded))
         assertThrows(IllegalArgumentException::class.java) { Profiles.parse(notCa.toByteArray()) }
     }
+
+    @Test
+    fun profileWithWrongTypesIsRejected() {
+        val ca = "\"${Base64.getEncoder().encodeToString(TestPki.root("Test Root").cert.encoded)}\""
+        fun profile(ssid: String = "\"Example Net\"", domain: String = "\"radius.example.org\"", cas: String = "[$ca]") =
+            """{"ssid":$ssid,"server_domain":$domain,"server_ca_certificates":$cas}"""
+        for (bad in listOf(
+            profile(ssid = "null"),
+            profile(ssid = "12345"),
+            profile(domain = "null"),
+            profile(domain = "true"),
+            profile(cas = "null"),
+            profile(cas = ca),
+            profile(cas = "[null]"),
+            profile(cas = "[42]"),
+            profile(cas = "[\"\"]"),
+            profile(cas = "[\"not base64!\"]"),
+            profile(cas = "[\"${Base64.getEncoder().encodeToString(ByteArray(16) { 1 })}\"]"),
+            """{"ssid":"Example Net","server_domain":"radius.example.org"}""",
+            "<html>Bad Gateway</html>",
+            "[]",
+            "",
+        )) {
+            assertThrows(bad, IllegalArgumentException::class.java) { Profiles.parse(bad.toByteArray()) }
+        }
+        Profiles.parse(profile().toByteArray())
+    }
 }

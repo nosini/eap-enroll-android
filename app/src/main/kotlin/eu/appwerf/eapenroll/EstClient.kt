@@ -95,10 +95,20 @@ class EstClient(
         }
     }
 
-    /** The Wi-Fi network settings, or null if the server has none (404). */
+    /**
+     * The Wi-Fi network settings, or null if the server has none (404).
+     * Throws [IllegalArgumentException] for a malformed profile.
+     */
     fun wifiProfile(): WifiProfile? {
         val response = request("GET", "wifi/profile", null, null, null, allowNotFound = true)
             ?: return null
+        if (response.status != HttpURLConnection.HTTP_OK) {
+            throw IOException("Unexpected answer to wifi/profile: HTTP ${response.status}")
+        }
+        val type = response.contentType?.substringBefore(';')?.trim()?.lowercase()
+        if (type != "application/json") {
+            throw IOException("Unexpected response type ${response.contentType} for wifi/profile")
+        }
         return Profiles.parse(response.body)
     }
 

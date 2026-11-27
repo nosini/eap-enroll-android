@@ -182,6 +182,35 @@ class LocalStateTest {
     }
 
     @Test
+    fun aFailedSaveOfTheRenewedCredentialKeepsTheCurrentOne() {
+        val enrolled = enrolled()
+        val due = TestPki.leaf(
+            deviceCa, "alice", keys.keyPair(enrolled.deviceAlias),
+            Date(now - 300 * day), Date(now + 65 * day),
+        )
+        store.save(enrolled.copy(deviceChain = listOf(due, deviceCa.cert)))
+        val failing = object : StateStore {
+            override fun load(): EnrollmentState? = store.load()
+
+            override fun save(state: EnrollmentState?) {
+                // The renewed credential can't be stored; recording the
+                // failure on the current one still works.
+                check(state == null || state.deviceAlias == enrolled.deviceAlias) {
+                    "Could not save the enrollment state"
+                }
+                store.save(state)
+            }
+        }
+        server.answer = { FakeEstServer.issue(it, deviceCa, "alice", notAfter = Date(now + 365 * day)) }
+        assertEquals(Enroller.Outcome.RETRY, enroller(failing).maintain())
+        val after = store.load()!!
+        assertEquals(enrolled.deviceAlias, after.deviceAlias)
+        assertEquals(due, after.deviceChain[0])
+        assertEquals(setOf(enrolled.deviceAlias), keys.keys.keys)
+        assertTrue(after.lastError!!.contains("Could not save"))
+    }
+
+    @Test
     fun missingDeviceKeyNeedsSetup() {
         val state = enrolled()
         keys.delete(state.deviceAlias)

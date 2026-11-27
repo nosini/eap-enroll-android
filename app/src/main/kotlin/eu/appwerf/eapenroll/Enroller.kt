@@ -233,7 +233,8 @@ class Enroller(
             store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain, wpa3 = wpa3))
             chain
         } catch (e: Exception) {
-            keys.delete(alias)
+            // Best effort: a key that stays is deleted by a later check.
+            runCatching { keys.delete(alias) }
             throw e
         }
         // The previous enrollment's keys, and any left over.
@@ -630,7 +631,7 @@ class Enroller(
         // generated, and the server wants the hash of the credential
         // presented in this request.
         val alias = newDeviceKey { keys.create(challenge = sha256(state.deviceChain[0].encoded)) }
-        val chain = try {
+        val next = try {
             val identity = Certs.commonName(state.deviceChain[0]).ifEmpty { "eap-enroll" }
             val (keyPair, csr, attestation) = newDeviceKey {
                 val keyPair = keys.keyPair(alias)
@@ -638,22 +639,25 @@ class Enroller(
             }
             val chain = client(state).reenrollDevice(csr, attestation)
             checkIssued(chain, keyPair.public)
-            chain
+            // A failed or lost renewal throws above and leaves the current
+            // credential in place: the next check renews again with it, and
+            // the server retires what the lost one issued. Only a credential
+            // from an answer that arrived is ever stored, and it is stored
+            // before the old key goes, so a failed save leaves the old
+            // credential usable.
+            state.copy(deviceAlias = alias, deviceChain = chain, previousDeviceAlias = state.deviceAlias)
+                .also(store::save)
         } catch (e: Exception) {
-            keys.delete(alias)
+            // Best effort: a key that stays is deleted by a later check.
+            runCatching { keys.delete(alias) }
             throw e
         }
-        // A failed or lost renewal throws above and leaves the current
-        // credential in place: the next check renews again with it, and the
-        // server retires what the lost one issued. Only a credential from an
-        // answer that arrived is ever stored.
-        state.previousDeviceAlias?.let(keys::delete)
-        val next = state.copy(deviceAlias = alias, deviceChain = chain, previousDeviceAlias = state.deviceAlias)
-        store.save(next)
+        // The state has the new credential; the keys it replaced go now.
+        state.previousDeviceAlias?.let { runCatching { keys.delete(it) } }
         // From here on only the new credential: no connection or TLS session
         // of the old one may be used again.
         closeClient()
-        log("New device credential, valid until ${chain[0].notAfter}")
+        log("New device credential, valid until ${next.deviceChain[0].notAfter}")
         return retirePreviousCredential(next)
     }
 

@@ -123,11 +123,11 @@ restarts, needs a network) does whatever is due:
   authenticating, so that doesn't count; the app then confirms the
   current, already confirmed Wi-Fi certificate again instead. If there is
   none, the old key stays until a later request gets through.
-- If the renewal fails or its answer is lost, the app keeps the current
-  credential, deletes the new key, and the next check renews again with
-  the same credential (and another new key). The server retires a
-  credential it issued but never saw used, so only the credential from an
-  answer that actually arrived is ever stored and used.
+- If the renewal fails, its answer is lost or storing the new credential
+  fails, the app keeps the current one, deletes the new key, and the next
+  check renews again with the same credential (and another new key). The
+  server retires a credential it issued but never saw used, so only the
+  credential from an answer that actually arrived is ever stored and used.
 - A renewal that fails over the new key's attestation (`400
   bad_attestation`, `403 attestation_refused`, `502
   attestation_status_unavailable`), or because the phone can't make the

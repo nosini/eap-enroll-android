@@ -265,16 +265,21 @@ class Enroller(
         }
 
     /**
-     * Records that Wi-Fi connected through this app's suggestion at [at],
-     * [elapsed] milliseconds into boot [boot]. Returns true if that proves
-     * the current certificate works, so a [maintain] run should confirm it.
+     * Records that Wi-Fi connected to [ssid] through this app's suggestion
+     * at [at], [elapsed] milliseconds into boot [boot]. Returns true if that
+     * proves the current certificate works, so a [maintain] run should
+     * confirm it.
      */
     fun connectionObserved(
+        ssid: String,
         at: Long = clock(),
         elapsed: Long = elapsedClock(),
         boot: Int = bootCount(),
     ): Boolean = synchronized(LOCK) {
         val state = store.load() ?: return false
+        // A stopped enrollment confirms nothing: the confirmation waits for
+        // the user. Nor does a connection to another network.
+        if (state.problem != null || state.profile?.ssid != ssid) return false
         if (!state.confirmPending || state.connectedAfterInstall) return state.confirmPending
         // A connection made before the new suggestion was installed could
         // still be reported just after it. Within a boot, the monotonic

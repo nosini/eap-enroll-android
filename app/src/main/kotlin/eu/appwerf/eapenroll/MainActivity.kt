@@ -577,7 +577,7 @@ class MainActivity : Activity() {
                 when (val result = block()) {
                     is Result.Text -> result.text
                     is Result.Of -> {
-                        val after = enroller.state()
+                        val after = runCatching { enroller.state() }.getOrNull()
                         scheduleQuietly { Jobs.followUp(app, result.outcome, after) }
                         AppLog.add("$name: ${result.outcome}")
                         describe(action, result.outcome, after, before)

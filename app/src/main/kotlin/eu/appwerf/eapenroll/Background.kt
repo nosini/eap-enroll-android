@@ -187,26 +187,21 @@ class RenewJobService : JobService() {
     }
 
     /**
-     * Records a connection the receiver passed on, if it went through the
-     * stored profile's network and the enrollment isn't stopped. A stopped
-     * enrollment confirms nothing; the confirmation waits for the user.
+     * Hands a connection the receiver passed on to the enroller, which
+     * records it if it went through the stored profile's network and the
+     * enrollment isn't stopped.
      */
     private fun recordConnection(params: JobParameters) {
         try {
             val ssid = params.extras.getString(Jobs.EXTRA_SSID) ?: return
-            val enroller = Enrollment.enroller(this)
-            val state = enroller.state()
             AppLog.add("Post-connection broadcast for '$ssid'")
-            val connected = state?.profile?.ssid?.takeIf { state.problem == null }
-            if (connected == ssid &&
-                enroller.connectionObserved(
-                    params.extras.getLong(Jobs.EXTRA_AT),
-                    params.extras.getLong(Jobs.EXTRA_ELAPSED),
-                    params.extras.getInt(Jobs.EXTRA_BOOT),
-                )
-            ) {
-                Jobs.runSoon(this, Jobs.AFTER_CONNECTION_DELAY_MS)
-            }
+            val connected = Enrollment.enroller(this).connectionObserved(
+                ssid,
+                params.extras.getLong(Jobs.EXTRA_AT),
+                params.extras.getLong(Jobs.EXTRA_ELAPSED),
+                params.extras.getInt(Jobs.EXTRA_BOOT),
+            )
+            if (connected) Jobs.runSoon(this, Jobs.AFTER_CONNECTION_DELAY_MS)
         } catch (e: Exception) {
             AppLog.add("Handling the connection broadcast failed: ${Errors.describe(e)}")
         }

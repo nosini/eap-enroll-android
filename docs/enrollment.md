@@ -239,10 +239,11 @@ new certificate was installed:
 - The broadcast itself only reads the suggestion and hands its SSID, wall
   time, elapsed time and boot count to a one-off job, which doesn't need a
   network.
-  The job reads the enrollment and records the connection only if it is
-  for the stored network and the enrollment isn't stopped; a broadcast
-  that arrives while a check holds the enroller's lock therefore doesn't
-  make the receiver wait. The confirmation itself runs as a background
+  The job passes the connection to the enroller, which records it under
+  its lock only if it is for the stored network and the enrollment isn't
+  stopped; a broadcast that arrives while a check holds the lock therefore
+  doesn't make the receiver wait, and the check and the recording can't
+  interleave. The confirmation itself runs as a background
   job at least 30 seconds later (53 seconds on the test phone;
   JobScheduler treats the delay as a minimum). Right after Wi-Fi
   connects, the network (and an always-on VPN) is still switching over:

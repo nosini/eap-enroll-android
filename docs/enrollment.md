@@ -12,17 +12,23 @@ what the app does with them. For automated client-server tests, see
 ## Credentials on the phone
 
 1. **Wi-Fi certificate**: CN = username, from the network's EAP CA. Its key
-   is an EC P-384 key generated in software for each certificate and handed
-   to Wi-Fi in a network suggestion (see [key handover](key-handover.md)).
-   After that the app can't use the key, and it keeps no copy.
+   is a new EC P-384 key for each certificate. In a work profile whose
+   owner app delegates certificate installation and selection, the key is
+   generated in the KeyChain, non-exportable and in the phone's TEE, and
+   Wi-Fi uses it by alias.
+   Otherwise the key is generated in software and handed to Wi-Fi in a
+   network suggestion, which imports it into its own keystore (see
+   [key handover](key-handover.md)). After either path the app keeps no
+   copy of the key.
 2. **Device credential**: a client certificate for the enrollment server
    only. Its key is an EC P-256 key in the app's Android Keystore
    (non-exportable, StrongBox if the phone has it, otherwise the TEE) and
    never leaves it. RADIUS never trusts it.
 
-The device credential is how the app authenticates renewals: the Wi-Fi key
-is no longer available to the app, and the app holds no CA credentials or
-reusable secrets.
+The device credential is how the app authenticates renewals: the server
+accepts only client certificates from its device CA, not the Wi-Fi
+certificate from the network's EAP CA, and the app holds no CA
+credentials or reusable secrets.
 
 The device key allows the digests SHA-256 (for the CSR) and NONE: the
 platform TLS stack (Conscrypt) hashes the handshake itself and signs the
@@ -114,9 +120,31 @@ A daily background job (the platform JobScheduler, persisted across
 restarts, needs a network) does whatever is due:
 
 - At 2/3 of the Wi-Fi certificate's lifetime (40 of 60 days): a new key,
-  a new certificate, and the suggestion is replaced. Adding a suggestion
-  with the same SSID and security type replaces the old one and its key in
-  Wi-Fi's keystore (AOSP `WifiNetworkSuggestionsManager.add()`).
+  a new certificate, and the suggestion is replaced. In a work profile
+  whose owner app delegates certificate installation and selection, the
+  new key is made in the KeyChain, gets the issued certificate and a
+  grant to Wi-Fi, and Wi-Fi uses it by alias. Without both scopes, or
+  when the KeyChain can't make the key, a software key is used: adding a
+  suggestion with the same SSID and security type replaces the old one
+  and its key in Wi-Fi's keystore (AOSP
+  `WifiNetworkSuggestionsManager.add()`).
+- KeyChain keys are only known from the state, since the app can't list
+  them, so the state keeps every alias:
+  - A new key's alias is stored as pending before the key is generated.
+    Pending keys are never deleted: a renewal that stops between
+    installing the suggestion and storing the state leaves Wi-Fi using
+    one. The next successful install marks them old.
+  - A key that never reaches Wi-Fi (generating it, the request, storing
+    its certificate or the install failed) is deleted at once, or marked
+    old if that fails.
+  - The key of a replaced suggestion is marked old.
+  - Old keys are deleted on each check while the current certificate is
+    confirmed; a key that can't be deleted (for example while the
+    certificate installation scope is withdrawn) stays old and is tried
+    again on the next check. The current key is never deleted.
+  - Setting up with a new link keeps the previous enrollment's aliases:
+    its current and pending keys become pending, its old keys stay old.
+  - Removing the enrollment deletes them all.
 - At 2/3 of the device credential's lifetime: a new Keystore key (attested
   for the current credential) and `device/simplereenroll`. The app stores
   the new credential and then uses it once (`wifi/profile`), which makes
@@ -183,8 +211,9 @@ restarts, needs a network) does whatever is due:
   administrator forbids adding networks.
 - On each check, the app also checks whether its suggestion for the
   enrolled network is still in Wi-Fi. Turning off Wi-Fi control makes
-  Android delete the suggestion (and its key, which only ever lived in
-  Wi-Fi). If it is missing and adding networks is allowed, the app
+  Android delete the suggestion (and a software key, which only ever
+  lived in Wi-Fi; a KeyChain key stays and is marked old with the next
+  install). If it is missing and adding networks is allowed, the app
   requests and installs a new Wi-Fi certificate, but only while the
   current certificate is confirmed (the same rule as "Renew certificate"),
   so repeated removals can't pile up unconfirmed certificates on the
@@ -275,11 +304,13 @@ Network errors and `5xx` are retried as before; other answers are left to
 the daily check, since a `400` without one of these reasons means the
 request itself was wrong.
 
-Known gap: if Wi-Fi fails to import a new key, `addNetworkSuggestions()`
-still returns success and keeps the old suggestion (AOSP logs
-`Enterprise network install failure`). The app can't tell, and a later
-connection with the old certificate would confirm the new one. The old
-certificate is then revoked and the phone needs a renewal over another
+Known gap: if Wi-Fi fails to install a new suggestion's keys (importing a
+software key, or for a KeyChain key, for example looking up its grant or
+installing the CA certificates), `addNetworkSuggestions()` still returns
+success and keeps the old suggestion (AOSP logs `Enterprise network install
+failure`). The app can't tell, and a
+later connection with the old certificate would confirm the new one. The
+old certificate is then revoked and the phone needs a renewal over another
 network.
 
 A Wi-Fi certificate revoked outside the enrollment server (for example

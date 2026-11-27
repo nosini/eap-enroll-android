@@ -31,7 +31,7 @@ class WifiSetupInputTest {
         // 11 three-byte characters: 33 bytes in 11 characters.
         val settings = NetworkSettings("€".repeat(11), "alice", "radius.example.org", false, listOf(ca.cert))
         val e = assertThrows(IllegalArgumentException::class.java) {
-            WifiSetup.suggestion(settings, keys.private, listOf(leaf))
+            WifiSetup.suggestion(settings, WifiKey.Imported(keys.private), listOf(leaf))
         }
         assertTrue(e.message!!.contains("32 bytes"))
     }

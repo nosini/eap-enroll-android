@@ -87,6 +87,7 @@
     <string name="detail_network">Network</string>
     <string name="detail_username">Username</string>
     <string name="detail_wifi_cert">Wi-Fi certificate</string>
+    <string name="detail_wifi_key">Wi-Fi key</string>
     <string name="detail_device_cert">Enrollment credential</string>
     <string name="detail_server">Enrollment server</string>
     <string name="detail_last_check">Last successful check</string>
@@ -96,6 +97,8 @@
     <string name="wifi_cert_value">Valid until %1$s\nRenews from %2$s</string>
     <string name="wifi_cert_confirmed">Confirmed; older certificates are revoked</string>
     <string name="wifi_cert_unconfirmed">Not confirmed yet</string>
+    <string name="wifi_key_keychain">KeyChain key, not exportable</string>
+    <string name="wifi_key_imported">Imported into Wi-Fi\'s keystore</string>
     <string name="device_cert_value">Valid until %1$s</string>
     <string name="device_key_value">Key in %1$s</string>
     <string name="never">Never</string>

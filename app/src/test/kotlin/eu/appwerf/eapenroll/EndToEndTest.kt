@@ -76,7 +76,7 @@ class EndToEndTest {
         assertEquals("Example Net ", first.profile.ssid)
         assertEquals("radius.example.org", first.profile.serverDomain)
         assertEquals("alice", first.identity)
-        assertEquals(384, (first.key as ECPrivateKey).params.curve.field.fieldSize)
+        assertEquals(384, ((first.key as WifiKey.Imported).privateKey as ECPrivateKey).params.curve.field.fieldSize)
         assertEquals(2, first.chain.size)
         assertEquals("E2E Wi-Fi CA", Certs.commonName(first.chain[1]))
         assertTrue(state.confirmPending)

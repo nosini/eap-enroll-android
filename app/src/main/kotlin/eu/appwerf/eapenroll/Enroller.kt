@@ -11,6 +11,8 @@ import java.security.PublicKey
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.util.Date
+import java.util.UUID
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** Keys for the device credential: non-exportable, in the platform keystore on a phone. */
@@ -34,19 +36,65 @@ interface DeviceKeys {
     fun deleteOthers(keep: Set<String>)
 }
 
+/** The key for the Wi-Fi certificate in the suggestion. */
+sealed interface WifiKey {
+    /** A software key that Wi-Fi imports into its own keystore. */
+    class Imported(val privateKey: PrivateKey) : WifiKey
+
+    /** A KeyChain key with its certificate stored and granted to Wi-Fi. */
+    class InKeyChain(val alias: String) : WifiKey
+}
+
 /**
  * Hands a Wi-Fi key and certificate to the system, replacing the previous
  * one. Throws [WifiInstallException] if the system won't take it.
  */
 fun interface WifiInstaller {
     /** [wpa3]: WPA3-Enterprise only, otherwise WPA2/WPA3-Enterprise. */
-    fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>)
+    fun install(profile: WifiProfile, wpa3: Boolean, identity: String, key: WifiKey, chain: List<X509Certificate>)
 
     /** Throws [WifiInstallException] if [install] can't work now, e.g. while the user disallows Wi-Fi control. */
     fun checkAllowed() {}
 
     /** Whether the app's network suggestion for [profile] is currently installed in Wi-Fi. */
     fun isInstalled(profile: WifiProfile): Boolean = true
+}
+
+/**
+ * Wi-Fi keys in the KeyChain, for a work profile whose owner app delegates
+ * certificate installation and selection to this app.
+ */
+interface WifiKeys {
+    /** Whether new Wi-Fi keys can go in the KeyChain now (both scopes delegated). */
+    fun available(): Boolean
+
+    /** Whether Wi-Fi keys can be removed from the KeyChain now (certificate installation delegated). */
+    fun canDelete(): Boolean
+
+    /** Generates an EC P-384 key under [alias] in the KeyChain. */
+    fun create(alias: String): KeyPair
+
+    /** Stores the issued chain (leaf first, no root) with the key and grants the key to Wi-Fi. */
+    fun store(alias: String, chain: List<X509Certificate>)
+
+    /** Removes the key pair; succeeds if it doesn't exist, throws if it can't (e.g. delegation withdrawn). */
+    fun delete(alias: String)
+}
+
+/** No delegated certificate scopes: Wi-Fi keys are software keys, imported by Wi-Fi. */
+object NoWifiKeys : WifiKeys {
+    override fun available() = false
+
+    override fun canDelete() = false
+
+    override fun create(alias: String): KeyPair =
+        throw UnsupportedOperationException("Wi-Fi keys can't be made in the KeyChain")
+
+    override fun store(alias: String, chain: List<X509Certificate>) =
+        throw UnsupportedOperationException("Wi-Fi certificates can't be stored in the KeyChain")
+
+    override fun delete(alias: String) =
+        throw UnsupportedOperationException("Wi-Fi keys can't be deleted from the KeyChain")
 }
 
 /**
@@ -90,6 +138,17 @@ data class EnrollmentState(
     val wpa3: Boolean = false,
     /** The certificate in the current network suggestion, issuing CAs after it. */
     val wifiChain: List<X509Certificate>? = null,
+    /** The KeyChain alias of the key in the current suggestion; null for a software key imported by Wi-Fi. */
+    val wifiKeyAlias: String? = null,
+    /**
+     * KeyChain keys of renewals that haven't finished, or of an earlier
+     * enrollment: Wi-Fi may use one of them (a renewal can stop between
+     * installing the suggestion and storing the state), so they are kept
+     * until a later install replaces the suggestion.
+     */
+    val pendingWifiKeyAliases: List<String> = emptyList(),
+    /** KeyChain keys no suggestion uses any more, still to be deleted. */
+    val oldWifiKeyAliases: List<String> = emptyList(),
     val wifiInstalledAt: Long = 0,
     /**
      * [wifiInstalledAt] on the monotonic clock, to tell connections from
@@ -110,6 +169,10 @@ data class EnrollmentState(
     val lastErrorAt: Long = 0,
     val lastSuccessAt: Long = 0,
 ) {
+    /** Every KeyChain Wi-Fi key the state knows of. */
+    fun allWifiKeyAliases(): List<String> =
+        (listOfNotNull(wifiKeyAlias) + pendingWifiKeyAliases + oldWifiKeyAliases).distinct()
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("server_url", serverUrl)
         put("ca_fingerprint", caFingerprint)
@@ -119,6 +182,9 @@ data class EnrollmentState(
         profile?.let { put("profile", Profiles.toJson(it)) }
         put("wpa3", wpa3)
         wifiChain?.let { put("wifi_chain", Pem.encodeChain(it)) }
+        wifiKeyAlias?.let { put("wifi_key_alias", it) }
+        put("pending_wifi_key_aliases", JSONArray(pendingWifiKeyAliases))
+        put("old_wifi_key_aliases", JSONArray(oldWifiKeyAliases))
         put("wifi_installed_at", wifiInstalledAt)
         put("wifi_installed_elapsed", wifiInstalledElapsed)
         put("wifi_installed_boot", wifiInstalledBoot)
@@ -151,6 +217,9 @@ data class EnrollmentState(
             profile = json.optJSONObject("profile")?.let { Profiles.fromJson(it) },
             wpa3 = json.optBoolean("wpa3", wpa3),
             wifiChain = json.optStringOrNull("wifi_chain")?.let { Pem.certificates(it.toByteArray()) },
+            wifiKeyAlias = json.optStringOrNull("wifi_key_alias"),
+            pendingWifiKeyAliases = json.optStringList("pending_wifi_key_aliases"),
+            oldWifiKeyAliases = json.optStringList("old_wifi_key_aliases"),
             wifiInstalledAt = json.optLong("wifi_installed_at"),
             wifiInstalledElapsed = json.optLong("wifi_installed_elapsed"),
             wifiInstalledBoot = json.optInt("wifi_installed_boot"),
@@ -165,6 +234,9 @@ data class EnrollmentState(
 
         private fun JSONObject.optStringOrNull(name: String): String? =
             if (has(name) && !isNull(name)) getString(name) else null
+
+        private fun JSONObject.optStringList(name: String): List<String> =
+            optJSONArray(name)?.let { array -> (0 until array.length()).map { array.getString(it) } } ?: emptyList()
     }
 }
 
@@ -192,6 +264,7 @@ class Enroller(
     private val elapsedClock: () -> Long = { System.nanoTime() / 1_000_000 },
     /** Android's boot count, or 0 when it can't be read. */
     private val bootCount: () -> Int = { 0 },
+    private val wifiKeys: WifiKeys = NoWifiKeys,
 ) {
     enum class Outcome {
         NOT_ENROLLED,
@@ -233,7 +306,16 @@ class Enroller(
             }
             checkIssued(chain, keyPair.public)
             // Replaces whatever was stored, even a state that can't be read.
-            store.save(EnrollmentState(link.serverUrl, link.caFingerprint, alias, chain, wpa3 = wpa3))
+            // The previous enrollment's KeyChain keys are only known from
+            // its state: they stay listed. Its current key may still be in
+            // the suggestion until the first Wi-Fi certificate replaces it.
+            val previous = runCatching { store.load() }.getOrNull()
+            store.save(EnrollmentState(
+                link.serverUrl, link.caFingerprint, alias, chain, wpa3 = wpa3,
+                pendingWifiKeyAliases = previous?.let { listOfNotNull(it.wifiKeyAlias) + it.pendingWifiKeyAliases }
+                    .orEmpty().distinct(),
+                oldWifiKeyAliases = previous?.oldWifiKeyAliases.orEmpty(),
+            ))
             chain
         } catch (e: Exception) {
             // Best effort: a key that stays is deleted by a later check.
@@ -309,10 +391,22 @@ class Enroller(
     }
 
     /**
-     * Deletes the stored state and the device keys, also when the state
-     * can't be read. Removing the suggestion is up to the caller.
+     * Deletes the stored state, the device keys and the Wi-Fi keys in the
+     * KeyChain, also when the state can't be read. Removing the suggestion
+     * is up to the caller.
      */
     fun forget() = synchronized(LOCK) {
+        // Best effort: a key that can't be deleted now isn't worth failing
+        // the removal over.
+        runCatching { store.load() }.getOrNull()?.let { state ->
+            state.allWifiKeyAliases().forEach { alias ->
+                try {
+                    wifiKeys.delete(alias)
+                } catch (e: Exception) {
+                    log("Deleting Wi-Fi key $alias from the KeyChain failed: ${Errors.describe(e)}")
+                }
+            }
+        }
         store.save(null)
         keys.deleteOthers(emptySet())
     }
@@ -429,6 +523,10 @@ class Enroller(
                 state = renewWifi(state)
                 gotThrough()
             }
+            // Once the current certificate is confirmed, the keys it
+            // replaced go; until then they wait, and a key that couldn't be
+            // deleted before is tried again on every check.
+            if (!state.confirmPending) state = deleteOldWifiKeys(state)
             if (!accountChecked) {
                 log("Nothing showed that the account is enabled again (the server has no Wi-Fi profile)")
                 return Outcome.STOPPED
@@ -654,6 +752,45 @@ class Enroller(
         return next
     }
 
+    /**
+     * Deletes the KeyChain keys that no suggestion uses any more. Failures
+     * are logged and leave the keys listed for the next check; they never
+     * change the check's outcome.
+     */
+    private fun deleteOldWifiKeys(state: EnrollmentState): EnrollmentState {
+        val keep = listOfNotNull(state.wifiKeyAlias) + state.pendingWifiKeyAliases
+        val aliases = state.oldWifiKeyAliases.filter { it !in keep }
+        if (aliases.isEmpty()) return state
+        val allowed = try {
+            wifiKeys.canDelete()
+        } catch (e: Exception) {
+            log("Checking whether Wi-Fi keys can be removed from the KeyChain failed: ${Errors.describe(e)}")
+            false
+        }
+        if (!allowed) {
+            log("${aliases.size} old Wi-Fi key(s) stay in the KeyChain until the app may remove them")
+            return state
+        }
+        val deleted = aliases.filter { alias ->
+            try {
+                wifiKeys.delete(alias)
+                true
+            } catch (e: Exception) {
+                log("Deleting old Wi-Fi key $alias from the KeyChain failed: ${Errors.describe(e)}")
+                false
+            }
+        }
+        if (deleted.isEmpty()) return state
+        val next = state.copy(oldWifiKeyAliases = state.oldWifiKeyAliases - deleted.toSet())
+        try {
+            store.save(next)
+        } catch (e: Exception) {
+            log("Storing the state after deleting old Wi-Fi keys failed: ${Errors.describe(e)}")
+        }
+        log("Deleted ${deleted.size} old Wi-Fi key(s) from the KeyChain")
+        return next
+    }
+
     private fun renewDeviceCredential(state: EnrollmentState): EnrollmentState {
         log("Renewing the device credential")
         // Always a new key: an attestation challenge is fixed when the key is
@@ -711,22 +848,69 @@ class Enroller(
         val client = client(state)
         val profile = client.wifiProfile() ?: state.profile
             ?: throw IOException("The server has no Wi-Fi profile")
-        val keyPair = KeyPairGenerator.getInstance("EC")
+
+        // The state to build on: with a KeyChain key, it already records the
+        // alias before the key is made.
+        var base = state
+        var alias: String? = null
+        var keyPair: KeyPair? = null
+        val keyChain = try {
+            wifiKeys.available()
+        } catch (e: Exception) {
+            log("Checking whether Wi-Fi keys can go in the KeyChain failed: ${Errors.describe(e)}")
+            false
+        }
+        if (keyChain) {
+            val newAlias = "wifi-" + UUID.randomUUID()
+            // Recorded before generating: a process that dies from here on
+            // leaves the key listed, and a later install moves it on to be
+            // deleted.
+            base = state.copy(pendingWifiKeyAliases = state.pendingWifiKeyAliases + newAlias)
+            store.save(base)
+            try {
+                keyPair = wifiKeys.create(newAlias)
+                alias = newAlias
+            } catch (e: Exception) {
+                log("Generating the Wi-Fi key in the KeyChain failed; using a software key: ${Errors.describe(e)}")
+                base = dropFailedWifiKey(base, newAlias)
+            }
+        }
+        val pair = keyPair ?: KeyPairGenerator.getInstance("EC")
             .apply { initialize(ECGenParameterSpec("secp384r1")) }
             .generateKeyPair()
+        log(if (alias != null) "Wi-Fi key generated in the KeyChain" else "Wi-Fi key generated in software")
+
         val identity = Certs.commonName(state.deviceChain[0])
-        val chain = client.enrollWifi(Csr.create(keyPair, identity.ifEmpty { "eap-enroll" }))
-        checkIssued(chain, keyPair.public)
-        val wifiIdentity = Certs.commonName(chain[0])
-        check(wifiIdentity.isNotEmpty()) { "The Wi-Fi certificate has no common name" }
-        try {
-            wifi.install(profile, state.wpa3, wifiIdentity, keyPair.private, Certs.withoutRoots(chain))
-        } catch (e: WifiInstallException) {
-            throw e
+        val (chain, wifiIdentity) = try {
+            val issued = client.enrollWifi(Csr.create(pair, identity.ifEmpty { "eap-enroll" }))
+            checkIssued(issued, pair.public)
+            val name = Certs.commonName(issued[0])
+            check(name.isNotEmpty()) { "The Wi-Fi certificate has no common name" }
+            val forWifi = Certs.withoutRoots(issued)
+            try {
+                alias?.let { wifiKeys.store(it, forWifi) }
+            } catch (e: Exception) {
+                throw WifiInstallException("Storing the Wi-Fi certificate in the KeyChain failed: ${e.message}", e)
+            }
+            val wifiKey = alias?.let { WifiKey.InKeyChain(it) } ?: WifiKey.Imported(pair.private)
+            try {
+                wifi.install(profile, state.wpa3, name, wifiKey, forWifi)
+            } catch (e: WifiInstallException) {
+                throw e
+            } catch (e: Exception) {
+                throw WifiInstallException("Installing the Wi-Fi certificate failed: ${e.message}", e)
+            }
+            issued to name
         } catch (e: Exception) {
-            throw WifiInstallException("Installing the Wi-Fi certificate failed: ${e.message}", e)
+            // A KeyChain key that never reached Wi-Fi is useless. After a
+            // successful install the key must stay for Wi-Fi.
+            alias?.let { dropFailedWifiKey(runCatching { store.load() }.getOrNull() ?: base, it) }
+            throw e
         }
-        val next = state.copy(
+        // The new suggestion replaced the previous one: its key, and any
+        // pending one an interrupted renewal may have installed, are unused.
+        val replaced = listOfNotNull(base.wifiKeyAlias) + base.pendingWifiKeyAliases
+        val next = base.copy(
             profile = profile,
             wifiChain = chain,
             wifiInstalledAt = clock(),
@@ -734,10 +918,38 @@ class Enroller(
             wifiInstalledBoot = bootCount(),
             confirmPending = true,
             connectedAfterInstall = false,
+            wifiKeyAlias = alias,
+            pendingWifiKeyAliases = emptyList(),
+            oldWifiKeyAliases = (base.oldWifiKeyAliases + replaced).distinct() - listOfNotNull(alias).toSet(),
         )
         store.save(next)
         log("Wi-Fi certificate ${chain[0].serialNumber.toString(16)} for $wifiIdentity installed, " +
             "valid until ${chain[0].notAfter}")
+        return next
+    }
+
+    /**
+     * Deletes the KeyChain key [alias] of a renewal that failed before
+     * Wi-Fi got it, or lists it as old if that fails, and stores that
+     * (best effort). No suggestion uses the key either way.
+     */
+    private fun dropFailedWifiKey(state: EnrollmentState, alias: String): EnrollmentState {
+        val deleted = try {
+            wifiKeys.delete(alias)
+            true
+        } catch (e: Exception) {
+            log("Deleting the unused Wi-Fi key $alias from the KeyChain failed: ${Errors.describe(e)}")
+            false
+        }
+        val next = state.copy(
+            pendingWifiKeyAliases = state.pendingWifiKeyAliases - alias,
+            oldWifiKeyAliases = if (deleted) state.oldWifiKeyAliases else (state.oldWifiKeyAliases + alias).distinct(),
+        )
+        try {
+            store.save(next)
+        } catch (e: Exception) {
+            log("Storing the state after the failed Wi-Fi key failed: ${Errors.describe(e)}")
+        }
         return next
     }
 

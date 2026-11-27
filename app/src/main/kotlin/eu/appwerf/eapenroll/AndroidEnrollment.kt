@@ -1,6 +1,7 @@
 package eu.appwerf.eapenroll
 
 import android.app.AppOpsManager
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -113,14 +114,7 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
 
     /** Where the key lives: StrongBox, TEE or software. */
     fun describe(alias: String): String = try {
-        val key = keyPair(alias).private
-        val info = KeyFactory.getInstance(key.algorithm, ANDROID_KEYSTORE).getKeySpec(key, KeyInfo::class.java)
-        when (info.securityLevel) {
-            KeyProperties.SECURITY_LEVEL_STRONGBOX -> "StrongBox"
-            KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TEE"
-            KeyProperties.SECURITY_LEVEL_SOFTWARE -> "software"
-            else -> "security level ${info.securityLevel}"
-        }
+        keySecurityLevel(keyPair(alias).private)
     } catch (e: Exception) {
         "unknown: ${e.message}"
     }
@@ -128,10 +122,90 @@ class AndroidDeviceKeys(private val log: (String) -> Unit = {}) : DeviceKeys {
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
     private companion object {
-        const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val PREFIX = "device-"
     }
 }
+
+/** Where [key] lives: StrongBox, TEE or software; throws if the KeyInfo can't be read. */
+private fun keySecurityLevel(key: PrivateKey): String {
+    val info = KeyFactory.getInstance(key.algorithm, ANDROID_KEYSTORE).getKeySpec(key, KeyInfo::class.java)
+    return when (info.securityLevel) {
+        KeyProperties.SECURITY_LEVEL_STRONGBOX -> "StrongBox"
+        KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TEE"
+        KeyProperties.SECURITY_LEVEL_SOFTWARE -> "software"
+        else -> "security level ${info.securityLevel}"
+    }
+}
+
+/**
+ * Wi-Fi keys in the KeyChain, for a work profile whose owner app delegates
+ * certificate installation and selection to this app. The keys are
+ * non-exportable and in the phone's secure hardware where it can make
+ * EC P-384 there; Wi-Fi uses them by alias.
+ */
+class KeyChainWifiKeys(
+    private val context: Context,
+    private val log: (String) -> Unit = {},
+) : WifiKeys {
+    // Null on a phone without device admin support.
+    private val dpmOrNull: DevicePolicyManager? = context.getSystemService(DevicePolicyManager::class.java)
+    private val dpm: DevicePolicyManager
+        get() = dpmOrNull ?: throw IllegalStateException("The phone has no device policy service")
+
+    private fun scopes(): List<String> =
+        dpmOrNull?.getDelegatedScopes(null, context.packageName).orEmpty()
+
+    override fun available(): Boolean {
+        val scopes = scopes()
+        return DevicePolicyManager.DELEGATION_CERT_INSTALL in scopes &&
+            DevicePolicyManager.DELEGATION_CERT_SELECTION in scopes
+    }
+
+    /** Removing a key needs only the certificate installation scope. */
+    override fun canDelete(): Boolean = DevicePolicyManager.DELEGATION_CERT_INSTALL in scopes()
+
+    override fun create(alias: String): KeyPair {
+        val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+            .setAlgorithmParameterSpec(ECGenParameterSpec("secp384r1"))
+            // NONE for the TLS stack, as for the device key; the CSR uses SHA-384.
+            .setDigests(
+                KeyProperties.DIGEST_NONE,
+                KeyProperties.DIGEST_SHA256,
+                KeyProperties.DIGEST_SHA384,
+                KeyProperties.DIGEST_SHA512,
+            )
+            .build()
+        val attested = dpm.generateKeyPair(null, KeyProperties.KEY_ALGORITHM_EC, spec, 0)
+            ?: throw IllegalStateException("The system didn't generate Wi-Fi key $alias")
+        val keyPair = attested.keyPair
+            ?: throw IllegalStateException("The system returned no key pair for Wi-Fi key $alias")
+        val level = runCatching { keySecurityLevel(keyPair.private) }.getOrNull()
+        log("Wi-Fi key $alias in the KeyChain" + (level?.let { " ($it)" } ?: ""))
+        return keyPair
+    }
+
+    override fun store(alias: String, chain: List<X509Certificate>) {
+        if (!dpm.setKeyPairCertificate(null, alias, chain, false)) {
+            throw IllegalStateException("Storing the certificate for Wi-Fi key $alias in the KeyChain failed")
+        }
+        if (!dpm.grantKeyPairToWifiAuth(alias)) {
+            throw IllegalStateException("Granting Wi-Fi key $alias to Wi-Fi failed")
+        }
+    }
+
+    /**
+     * removeKeyPair() succeeds for an alias that doesn't exist. hasKeyPair()
+     * is asked only after a failure: for a key without a certificate yet,
+     * the state a failed renewal leaves, its answer isn't settled.
+     */
+    override fun delete(alias: String) {
+        if (dpm.removeKeyPair(null, alias)) return
+        if (!dpm.hasKeyPair(alias)) return
+        throw IllegalStateException("Removing Wi-Fi key $alias from the KeyChain failed")
+    }
+}
+
+private const val ANDROID_KEYSTORE = "AndroidKeyStore"
 
 /** Keeps the enrollment state as JSON in private preferences (backups are off). */
 class PrefsStateStore(context: Context) : StateStore {
@@ -189,7 +263,7 @@ class SuggestionInstaller(private val context: Context, private val log: (String
     override fun isInstalled(profile: WifiProfile): Boolean =
         wifi.networkSuggestions.any { it.ssid == profile.ssid }
 
-    override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
+    override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, key: WifiKey, chain: List<X509Certificate>) {
         val network = NetworkSettings(
             ssid = profile.ssid,
             identity = identity,
@@ -197,7 +271,7 @@ class SuggestionInstaller(private val context: Context, private val log: (String
             wpa3 = wpa3,
             caCertificates = profile.serverCaCertificates,
         )
-        val suggestion = WifiSetup.suggestion(network, privateKey, chain, notifyOnConnect = true)
+        val suggestion = WifiSetup.suggestion(network, key, chain, notifyOnConnect = true)
         val status = wifi.addNetworkSuggestions(listOf(suggestion))
         when (status) {
             WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS -> {}
@@ -206,7 +280,8 @@ class SuggestionInstaller(private val context: Context, private val log: (String
             else -> throw WifiInstallException("Wi-Fi didn't take the network: ${WifiSetup.statusName(status)}")
         }
         log("Network suggestion for '${profile.ssid}' installed " +
-            "(${if (network.wpa3) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"})")
+            "(${if (network.wpa3) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"}, " +
+            "${if (key is WifiKey.InKeyChain) "key in the KeyChain" else "key imported by Wi-Fi"})")
         val stale = wifi.networkSuggestions.filter { it != suggestion }
         if (stale.isNotEmpty()) {
             val removed = wifi.removeNetworkSuggestions(stale)
@@ -245,6 +320,7 @@ object Enrollment {
             AndroidDeviceKeys(both), SuggestionInstaller(app, both), PrefsStateStore(app), both,
             elapsedClock = SystemClock::elapsedRealtime,
             bootCount = { Settings.Global.getInt(app.contentResolver, Settings.Global.BOOT_COUNT, 0) },
+            wifiKeys = KeyChainWifiKeys(app, both),
         )
     }
 }

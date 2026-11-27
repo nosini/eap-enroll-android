@@ -2,8 +2,8 @@
 
 EAP Enroll puts an EAP-TLS client certificate for WPA2/WPA3-Enterprise
 Wi-Fi on an Android phone and renews it before it expires. The private key
-is made on the phone and goes straight into Android's Wi-Fi keystore: it
-is never exported, copied or typed in.
+is made on the phone and stays there: Wi-Fi uses it from the phone's
+keystore, and it is never exported, copied or typed in.
 
 It's meant for personal phones on self-hosted networks. It doesn't
 need device management, a work profile or Google Play services.
@@ -156,10 +156,17 @@ Manual certificates aren't renewed; repeat the steps before they expire.
 
 ## How it works
 
-Android only lets device or profile owners give Wi-Fi access to keys in the
-Keystore. So EAP Enroll generates the Wi-Fi key in software for each
-certificate and hands the key and certificate to Wi-Fi in a network
-suggestion. Wi-Fi stores them in its own keystore; the app keeps no copy.
+Without device management, EAP Enroll generates the Wi-Fi key in software
+for each certificate and hands the key and certificate to Wi-Fi in a
+network suggestion. Wi-Fi stores them in its own keystore; the app keeps
+no copy.
+
+In a work profile whose owner app delegates certificate installation and
+selection to EAP Enroll, the Wi-Fi key is generated in the KeyChain
+instead, in the phone's secure hardware, and can't be exported. Wi-Fi uses
+the key by alias. The app switches to that path with the next Wi-Fi
+certificate, at the next renewal or with **Renew certificate**. The main
+screen says which kind of key the current certificate uses.
 
 The app authenticates to the enrollment server with a separate device
 credential, whose key stays in the phone's StrongBox or TEE. RADIUS never

@@ -338,6 +338,10 @@ class MainActivity : Activity() {
                 getString(R.string.wifi_cert_value, dateOf(wifiCert.notAfter.time), dateOf(renewalStart(wifiCert))) +
                     "\n$confirmed",
             )
+            detail(
+                R.string.detail_wifi_key,
+                getString(if (state.wifiKeyAlias != null) R.string.wifi_key_keychain else R.string.wifi_key_imported),
+            )
         }
         val device = state.deviceChain[0]
         detail(

@@ -302,7 +302,7 @@ class ManualSetupActivity : Activity() {
         AppLog.add("Network: SSID '${settings.ssid}' (${settings.ssid.length} characters), identity '${settings.identity}', " +
             "domain '${settings.serverDomain}', ${if (settings.wpa3) "WPA3-Enterprise only" else "WPA2/WPA3-Enterprise"}, " +
             "${settings.caCertificates.size} CA certificate(s), client chain of ${chain.size}")
-        return WifiSetup.suggestion(settings, keyPair.private, chain)
+        return WifiSetup.suggestion(settings, WifiKey.Imported(keyPair.private), chain)
     }
 
     private fun addSuggestion() {

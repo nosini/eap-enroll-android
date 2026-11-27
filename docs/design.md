@@ -18,13 +18,13 @@ On an unmanaged Android 12+ phone:
 Not in scope: device management (MDM), a general-purpose EST client for
 the Play Store, and running an EST or SCEP server inside this project.
 
-Generating the Wi-Fi key directly in hardware isn't possible on an
-unmanaged phone: Wi-Fi only takes a hardware key from KeyChain when a
-device or profile owner has granted it to Wi-Fi. Instead, the app
-generates the Wi-Fi key in software and hands it to Wi-Fi, which imports
-it into Wi-Fi's own hardware-backed keystore. See
-[key handover](key-handover.md) for the Android platform details and the
-managed alternatives.
+Generating the Wi-Fi key directly in hardware needs a device or profile
+owner. In a work profile whose owner app delegates certificate
+installation and selection, the app generates the key in the KeyChain and
+Wi-Fi uses it by alias. Otherwise the app generates the Wi-Fi key in
+software and hands it to Wi-Fi, which imports it into Wi-Fi's own
+hardware-backed keystore. See [key handover](key-handover.md) for the
+Android platform details.
 
 ## Network settings
 
@@ -72,11 +72,24 @@ What that means for the app:
 
 ## Key handover to Wi-Fi
 
-In automatic enrollment, the app generates a fresh EC P-384 key in memory,
-sends a CSR to the enrollment server, and hands the key and issued
-certificate chain directly to Wi-Fi in a `WifiNetworkSuggestion` via
+In automatic enrollment, the app generates a fresh EC P-384 key for each
+certificate. In a work profile whose owner app delegates certificate
+installation and selection, the key is generated in the KeyChain,
+non-exportable and in the phone's secure hardware (the TEE; StrongBox
+usually lacks P-384). The app stores the issued certificate chain with the
+key and grants the key to Wi-Fi, which uses it by alias
+(`WifiEnterpriseConfig.setClientKeyPairAlias()`). The state records
+every alias, from before the key is generated, since the app can't list
+KeyChain keys; keys that no suggestion uses are deleted once the current
+certificate is confirmed (see [enrollment](enrollment.md)).
+
+Without both delegated scopes, the key is generated in software. The app
+hands the key and issued certificate chain directly to Wi-Fi in a
+`WifiNetworkSuggestion` via
 `WifiEnterpriseConfig.setClientKeyEntryWithCertificateChain()`. The key is
-never written to disk and the app keeps no copy.
+never written to disk and the app keeps no copy. The next Wi-Fi
+certificate switches to the KeyChain path once both scopes are delegated,
+and back when they are not.
 
 In manual setup, the key must survive while the user has the CSR signed:
 
@@ -92,6 +105,9 @@ In manual setup, the key must survive while the user has the CSR signed:
 6. Delete the encrypted key and its Android Keystore wrapping key once the
    phone has connected.
 
+Manual setup always uses the software path, with and without delegated
+certificate scopes.
+
 ## Enrollment and renewal
 
 See [enrollment](enrollment.md) for the full state machine and protocol
@@ -106,10 +122,11 @@ handling. In summary:
    device certificate for mutual TLS to the enrollment server only. RADIUS
    never trusts it.
 3. **Renewal**: a daily JobScheduler job starts renewing at 2/3 of each
-   certificate's lifetime. Because the app cannot reuse a Wi-Fi key after
-   handing it over, every Wi-Fi renewal generates a new key, installs the
-   new certificate in the suggestion, and confirms it once Wi-Fi connects
-   with it so the server can revoke older certificates.
+   certificate's lifetime. Every Wi-Fi renewal generates a new key: a
+   software key can't be reused after Wi-Fi imports it, and the KeyChain
+   path also uses a new key for each certificate. The app installs the new
+   certificate in the suggestion and confirms it once Wi-Fi connects with
+   it, so the server can revoke older certificates.
 4. **Expiry warnings**: a notification warns when less than 1/6 of a
    certificate's lifetime remains and renewal hasn't succeeded, or when
    the server has refused the phone.
@@ -129,10 +146,11 @@ CA.
 
 ## Security requirements
 
-- The Wi-Fi private key never leaves the device. In automatic enrollment
-  it exists in memory only during the request and handover; in manual
-  setup it is encrypted at rest under a non-exportable Android Keystore
-  key.
+- The Wi-Fi private key never leaves the device. With delegated
+  certificate scopes it is non-exportable in the KeyChain. Otherwise, in
+  automatic enrollment it exists in memory only during the request and
+  handover; in manual setup it is encrypted at rest under a non-exportable
+  Android Keystore key.
 - Server validation is strict: only the configured CA certificate(s) are
   trusted and the configured server domain must match. The app won't save
   a network without both. No trust on first use, no "don't validate".

@@ -10,7 +10,6 @@ import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyStore
 import java.security.MessageDigest
-import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
@@ -85,7 +84,68 @@ class MemoryStore : StateStore {
     }
 }
 
-class Install(val profile: WifiProfile, val wpa3: Boolean, val identity: String, val key: PrivateKey, val chain: List<X509Certificate>)
+/**
+ * Wi-Fi keys in the KeyChain, in memory. [available] stands for both
+ * delegated scopes; the failures make a step throw like the platform does.
+ */
+class FakeWifiKeys : WifiKeys {
+    var available = true
+
+    /** What [canDelete] answers; null follows [available]. */
+    var deletable: Boolean? = null
+    val keys = HashMap<String, KeyPair>()
+    val chains = HashMap<String, List<X509Certificate>>()
+    val granted = HashSet<String>()
+
+    /** Every key made, in order, including deleted ones. */
+    val created = ArrayList<KeyPair>()
+
+    /** Every alias [delete] was called with, whether it existed or not. */
+    val deleted = ArrayList<String>()
+
+    var availableFailure: Exception? = null
+    var createFailure: Exception? = null
+    var storeFailure: Exception? = null
+    var grantFailure: Exception? = null
+
+    /** Returns an exception to throw for an alias, or null to let the deletion through. */
+    var deleteFailure: ((String) -> Exception?)? = null
+
+    override fun available(): Boolean {
+        availableFailure?.let { throw it }
+        return available
+    }
+
+    override fun canDelete(): Boolean {
+        availableFailure?.let { throw it }
+        return deletable ?: available
+    }
+
+    override fun create(alias: String): KeyPair {
+        createFailure?.let { throw it }
+        val keyPair = TestPki.keyPair("secp384r1")
+        keys[alias] = keyPair
+        created += keyPair
+        return keyPair
+    }
+
+    override fun store(alias: String, chain: List<X509Certificate>) {
+        storeFailure?.let { throw it }
+        chains[alias] = chain
+        grantFailure?.let { throw it }
+        granted += alias
+    }
+
+    override fun delete(alias: String) {
+        deleteFailure?.invoke(alias)?.let { throw it }
+        deleted += alias
+        keys.remove(alias)
+        chains.remove(alias)
+        granted.remove(alias)
+    }
+}
+
+class Install(val profile: WifiProfile, val wpa3: Boolean, val identity: String, val key: WifiKey, val chain: List<X509Certificate>)
 
 class RecordingWifi : WifiInstaller {
     val installs = ArrayList<Install>()
@@ -99,9 +159,9 @@ class RecordingWifi : WifiInstaller {
     /** What [isInstalled] answers; set to false to simulate Android removing the suggestion. */
     var installed = true
 
-    override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, privateKey: PrivateKey, chain: List<X509Certificate>) {
+    override fun install(profile: WifiProfile, wpa3: Boolean, identity: String, key: WifiKey, chain: List<X509Certificate>) {
         installFailure?.let { throw it }
-        installs += Install(profile, wpa3, identity, privateKey, chain)
+        installs += Install(profile, wpa3, identity, key, chain)
         installed = true
     }
 

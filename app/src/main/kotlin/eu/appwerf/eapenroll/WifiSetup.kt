@@ -4,7 +4,6 @@ import android.net.wifi.WifiEnterpriseConfig
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
-import java.security.PrivateKey
 import java.security.cert.X509Certificate
 
 data class NetworkSettings(
@@ -17,15 +16,16 @@ data class NetworkSettings(
 
 object WifiSetup {
     /**
-     * Builds an EAP-TLS suggestion that hands [privateKey] and [chain] to
-     * Wi-Fi. Server validation needs both the CA certificates and the domain.
-     * With [notifyOnConnect], Wi-Fi sends this app
+     * Builds an EAP-TLS suggestion with [key] and [chain]. A software key is
+     * handed to Wi-Fi, which imports it; a KeyChain key is used by alias.
+     * Server validation needs both the CA certificates and the domain. With
+     * [notifyOnConnect], Wi-Fi sends this app
      * `ACTION_WIFI_NETWORK_SUGGESTION_POST_CONNECTION` after connecting (if
      * the app may read scan results).
      */
     fun suggestion(
         settings: NetworkSettings,
-        privateKey: PrivateKey,
+        key: WifiKey,
         chain: List<X509Certificate>,
         notifyOnConnect: Boolean = false,
     ): WifiNetworkSuggestion {
@@ -42,7 +42,10 @@ object WifiSetup {
             identity = settings.identity
             caCertificates = settings.caCertificates.toTypedArray()
             domainSuffixMatch = settings.serverDomain
-            setClientKeyEntryWithCertificateChain(privateKey, chain.toTypedArray())
+            when (key) {
+                is WifiKey.Imported -> setClientKeyEntryWithCertificateChain(key.privateKey, chain.toTypedArray())
+                is WifiKey.InKeyChain -> setClientKeyPairAlias(key.alias)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 // The default minimum is TLS 1.0. Settable from Android 14.
                 minimumTlsVersion = WifiEnterpriseConfig.TLS_V1_2

@@ -106,6 +106,10 @@ class MainActivity : Activity() {
         messageView.visibility = View.GONE
         setupCard.visibility = View.GONE
         detailsCard.visibility = View.GONE
+        // Until the state is read or rendered, the actions stay hidden and
+        // disabled: a rotation during a request must not leave them usable.
+        statusActions.visibility = View.GONE
+        updateButtons()
         screen.listener = onWorkFinished
         AppLog.addOnce(::deviceInfo)
         handleSetupIntent(intent)
@@ -573,7 +577,10 @@ class MainActivity : Activity() {
      */
     private fun run(action: Action, block: () -> Result) {
         if (!screen.start()) return
-        snapshot?.let(::render) ?: updateButtons()
+        // Nothing rendered yet, for example after a rotation during the
+        // local network permission prompt: say that an action is running.
+        val snap = snapshot
+        if (snap != null) render(snap) else showWorking()
         val app = applicationContext
         val name = action.name.lowercase()
         AppLog.add("$name: started")
@@ -634,6 +641,16 @@ class MainActivity : Activity() {
             Enroller.Outcome.STOPPED -> Notifier.attentionText(state, System.currentTimeMillis()) ?: outcome.name
             Enroller.Outcome.NOT_ENROLLED -> outcome.name
         }
+    }
+
+    /** The status card while an action runs and there is no state to show yet. */
+    private fun showWorking() {
+        statusCard.visibility = View.VISIBLE
+        statusHeader.visibility = View.VISIBLE
+        showStatus(Tone.INFO, getString(R.string.status_working), null)
+        busyBar.visibility = View.VISIBLE
+        messageView.visibility = View.GONE
+        updateButtons()
     }
 
     private fun showMessage(text: String) {

@@ -73,7 +73,9 @@ class ManualSetupActivity : Activity() {
         click(R.id.copy_csr) { Ui.copy(this, "CSR", csrText()); show(getString(R.string.copied)) }
         click(R.id.import_cert) { openDocument(REQUEST_CERT) }
         click(R.id.paste_cert) {
-            importCertificate((Ui.clipboardText(this) ?: error(getString(R.string.clipboard_empty))).toByteArray())
+            val text = Ui.clipboardText(this) ?: error(getString(R.string.clipboard_empty))
+            check(text.length <= MAX_IMPORT_BYTES) { "The clipboard holds more than a certificate chain" }
+            importCertificate(text.toByteArray())
         }
         click(R.id.add_suggestion) { addSuggestion() }
         click(R.id.save_settings_network) { saveThroughSettings() }
@@ -244,11 +246,9 @@ class ManualSetupActivity : Activity() {
         }
     }
 
-    private fun readUri(uri: Uri): ByteArray {
-        val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-        check(bytes.size <= MAX_IMPORT_BYTES) { "File is too large" }
-        return bytes
-    }
+    /** Stops reading past [MAX_IMPORT_BYTES]: the picker offers any file, however large. */
+    private fun readUri(uri: Uri): ByteArray =
+        contentResolver.openInputStream(uri)!!.use { Streams.readLimited(it, MAX_IMPORT_BYTES, "The file") }
 
     private fun importCa(data: ByteArray) {
         val certs = Pem.certificates(data)

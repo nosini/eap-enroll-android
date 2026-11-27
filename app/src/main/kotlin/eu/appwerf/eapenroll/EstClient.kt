@@ -3,7 +3,6 @@ package eu.appwerf.eapenroll
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
-import java.io.InputStream
 import java.math.BigInteger
 import java.net.HttpURLConnection
 import java.net.URL
@@ -180,7 +179,9 @@ class EstClient(
                 return null
             }
             if (status !in 200..299) {
-                val text = connection.errorStream?.let { readLimited(it) }
+                // Only the first line is used; a large error page mustn't
+                // hide the status and the headers.
+                val text = connection.errorStream?.use { Streams.readPrefix(it, MAX_ERROR_TEXT) }
                     ?.toString(Charsets.UTF_8)?.lineSequence()?.firstOrNull()?.take(200).orEmpty()
                 val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
                 val reason = connection.getHeaderField("Enroll-Error")?.trim()?.takeIf { reasonPattern.matches(it) }
@@ -189,7 +190,7 @@ class EstClient(
             val responseBody = if (status == HttpURLConnection.HTTP_NO_CONTENT) {
                 ByteArray(0)
             } else {
-                connection.inputStream.use { readLimited(it) }
+                connection.inputStream.use { Streams.readLimited(it, MAX_RESPONSE, "The response") }
             }
             return Response(status, connection.contentType, responseBody)
         } finally {
@@ -205,17 +206,6 @@ class EstClient(
         return Pkcs7.fromEstBody(response.body)
     }
 
-    private fun readLimited(input: InputStream): ByteArray {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val n = input.read(buffer)
-            if (n < 0) break
-            out.write(buffer, 0, n)
-            if (out.size() > MAX_RESPONSE) throw IOException("Response too large")
-        }
-        return out.toByteArray()
-    }
 
     private fun encodeCsr(der: ByteArray): ByteArray = Base64.getEncoder().encode(der)
 
@@ -223,6 +213,7 @@ class EstClient(
         private const val PKCS10 = "application/pkcs10"
         private const val TIMEOUT_MS = 30_000
         private const val MAX_RESPONSE = 256 * 1024
+        private const val MAX_ERROR_TEXT = 4096
         private val reasonPattern = Regex("[a-z0-9_]{1,64}")
 
         /** The `Key-Attestation` header: standard base64, one line, of the concatenated DER certificates. */

@@ -174,6 +174,17 @@ class RefusalTest {
     }
 
     @Test
+    fun largeErrorPageKeepsTheRefusal() {
+        server.answer = {
+            FakeEstServer.Answer(429, "slow down\n" + "x".repeat(300 * 1024), mapOf("Retry-After" to "120"))
+        }
+        assertEquals(Enroller.Outcome.WAIT, enroller.maintain())
+        val state = store.load()!!
+        assertEquals(now + 120_000, state.waitUntil)
+        assertTrue(state.lastError!!.contains("slow down"))
+    }
+
+    @Test
     fun tooManyRequestsWithoutRetryAfterWaitsAWhile() {
         answer(429)
         assertEquals(Enroller.Outcome.WAIT, enroller.maintain())

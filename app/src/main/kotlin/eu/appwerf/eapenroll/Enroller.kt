@@ -265,8 +265,21 @@ class Enroller(
             if (state.previousDeviceAlias != null) {
                 state = retirePreviousCredential(state)
             }
+            // A 400 means the serial isn't a current Wi-Fi certificate of
+            // this phone (expired, revoked or unknown to the server):
+            // confirming it can never work, so it is replaced below. The
+            // confirmation stays pending until that succeeds, so a failed
+            // renewal leads here again on the next check.
+            var wifiNotCurrent = false
             if (state.confirmPending && state.connectedAfterInstall) {
-                state = confirmWifi(state)
+                try {
+                    state = confirmWifi(state)
+                } catch (e: EstException) {
+                    if (e.status != 400) throw e
+                    log("Wi-Fi certificate ${state.wifiChain!![0].serialNumber.toString(16)} can't be confirmed; " +
+                        "requesting a new one: ${Errors.describe(e)}")
+                    wifiNotCurrent = true
+                }
             }
             // A refused attestation won't change soon, and the current
             // credential still works: renew Wi-Fi with it all the same.
@@ -281,7 +294,7 @@ class Enroller(
                 }
             }
             val wifiChain = state.wifiChain
-            if (renewWifi || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
+            if (renewWifi || wifiNotCurrent || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
                 state = renewWifi(state)
             }
             attestationRefused?.let { return refused(state, it) }
@@ -605,6 +618,8 @@ object Errors {
                 "(install it, then try again), an unlocked bootloader, or an operating system or key " +
                 "storage it doesn't accept."
         e.reason == "bad_attestation" -> "The server requires key attestation and couldn't use this phone's."
+        e.reason == "expired_serial" || e.reason == "revoked_serial" || e.reason == "unknown_serial" ->
+            "The server doesn't count this Wi-Fi certificate as current (expired, revoked or unknown)."
         e.reason == "credential_superseded" ->
             "The server says the connection used a replaced credential; the next check reconnects."
         e.status == 429 -> e.retryAfterSeconds?.let {

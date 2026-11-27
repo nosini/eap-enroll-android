@@ -208,6 +208,69 @@ class RefusalTest {
         assertEquals(setOf(state.deviceAlias), keys.keys.keys)
     }
 
+    /**
+     * A Wi-Fi certificate waiting for confirmation, connected with since it
+     * was installed, and a device credential that isn't due, so the check
+     * starts with `wifi/confirm` and goes on to Wi-Fi only.
+     */
+    private fun pendingConfirmation(wifiNotAfter: Long) {
+        val state = store.load()!!
+        val ca = TestPki.root("Device CA")
+        val current = TestPki.leaf(
+            ca, "alice", keys.keyPair(state.deviceAlias),
+            notBefore = Date(now - day), notAfter = Date(now + 365 * day),
+        )
+        val wifiCert = TestPki.leaf(wifiCa, "alice", notBefore = Date(now - 70 * day), notAfter = Date(wifiNotAfter))
+        store.save(state.copy(
+            deviceChain = listOf(current, ca.cert), wifiChain = listOf(wifiCert, wifiCa.cert),
+            confirmPending = true, connectedAfterInstall = true,
+        ))
+    }
+
+    private fun refuseConfirmation(reason: String) {
+        server.answer = {
+            if (it.path == "wifi/confirm") {
+                FakeEstServer.Answer(400, "refused\n", mapOf("Enroll-Error" to reason))
+            } else {
+                FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+    }
+
+    @Test
+    fun refusedConfirmationRenewsWifi() {
+        // Confirmed too late: the certificate expired before the phone got to it.
+        pendingConfirmation(wifiNotAfter = now - day)
+        refuseConfirmation("expired_serial")
+        // Not retried on its own: the Wi-Fi renewal follows at once, and its
+        // failure decides what happens next.
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(listOf("wifi/confirm", "wifi/profile"), server.requests.map { it.path })
+        assertNull(store.load()!!.problem)
+
+        // Until a new certificate is installed, every check renews again.
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(listOf("wifi/confirm", "wifi/profile"), server.requests.drop(2).map { it.path })
+    }
+
+    @Test
+    fun refusedConfirmationRenewsWifiThatIsNotDue() {
+        pendingConfirmation(wifiNotAfter = now + 50 * day)
+        refuseConfirmation("revoked_serial")
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(listOf("wifi/confirm", "wifi/profile"), server.requests.map { it.path })
+    }
+
+    @Test
+    fun failedConfirmationIsRetried() {
+        pendingConfirmation(wifiNotAfter = now + 50 * day)
+        answer(503)
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(listOf("wifi/confirm"), server.requests.map { it.path })
+        val state = store.load()!!
+        assertTrue(state.confirmPending && state.connectedAfterInstall)
+    }
+
     @Test
     fun expiredCredentialNeedsSetupWithoutAsking() {
         answer(500)

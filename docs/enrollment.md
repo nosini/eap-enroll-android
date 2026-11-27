@@ -202,6 +202,15 @@ new certificate was installed:
 A connection through the server proves nothing: the phone may reach it
 over mobile data or a VPN.
 
+If the server answers `400`, the certificate isn't a current Wi-Fi
+certificate of this phone (`expired_serial`, `revoked_serial` or
+`unknown_serial`), for example because it expired before the phone got to
+confirm it. Confirming it again can't work, so the check doesn't stop
+there: it requests a new Wi-Fi certificate right away, whether or not the
+old one is due. The confirmation stays pending until the new certificate
+is installed, so if that renewal fails, the next check does the same.
+Other errors (network, `5xx`) are retried as before.
+
 Known gap: if Wi-Fi fails to import a new key, `addNetworkSuggestions()`
 still returns success and keeps the old suggestion (AOSP logs
 `Enterprise network install failure`). The app can't tell, and a later

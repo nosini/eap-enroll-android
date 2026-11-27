@@ -6,6 +6,7 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.ProviderException
 import java.security.PublicKey
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
@@ -281,23 +282,32 @@ class Enroller(
                     wifiNotCurrent = true
                 }
             }
-            // A refused attestation won't change soon, and the current
-            // credential still works: renew Wi-Fi with it all the same.
-            var attestationRefused: EstException? = null
+            // A renewal that fails over the new key's attestation, or over
+            // making the new key, leaves the current credential working:
+            // Wi-Fi is renewed with it all the same (wifi/simpleenroll isn't
+            // attested), and the renewal's failure decides the outcome.
+            var deviceRenewalFailure: Exception? = null
             if (Certs.renewalDue(state.deviceChain[0], now)) {
                 try {
                     state = renewDeviceCredential(state)
-                } catch (e: EstException) {
-                    if (!isAttestationRefused(e)) throw e
-                    log("Device credential renewal refused; keeping the current credential: ${Errors.describe(e)}")
-                    attestationRefused = e
+                } catch (e: Exception) {
+                    if (!keepsCurrentCredential(e)) throw e
+                    log("Device credential renewal failed; keeping the current credential: ${Errors.describe(e)}")
+                    deviceRenewalFailure = e
                 }
             }
             val wifiChain = state.wifiChain
             if (renewWifi || wifiNotCurrent || wifiChain == null || Certs.renewalDue(wifiChain[0], now)) {
                 state = renewWifi(state)
             }
-            attestationRefused?.let { return refused(state, it) }
+            when (val e = deviceRenewalFailure) {
+                null -> {}
+                is EstException -> return refused(state, e)
+                else -> {
+                    fail(state, e, null)
+                    return Outcome.RETRY
+                }
+            }
             store.save(state.copy(problem = null, waitUntil = 0, lastError = null, lastSuccessAt = clock()))
             return Outcome.OK
         } catch (e: EstException) {
@@ -320,6 +330,10 @@ class Enroller(
             fail(state, e, null)
             return Outcome.RETRY
         } catch (e: IllegalStateException) {
+            fail(state, e, null)
+            return Outcome.RETRY
+        } catch (e: ProviderException) {
+            // The Keystore's errors, e.g. from StrongBox, while signing with a device key.
             fail(state, e, null)
             return Outcome.RETRY
         }
@@ -365,6 +379,20 @@ class Enroller(
     }
 
     private fun isAttestationRefused(e: EstException) = e.status == 403 && e.reason == "attestation_refused"
+
+    /**
+     * Whether a failed device credential renewal leaves the current
+     * credential usable: the server turned down only the new key's
+     * attestation (refused, missing or unusable, or its status list is
+     * unavailable), or the phone couldn't make the new key.
+     */
+    private fun keepsCurrentCredential(e: Exception): Boolean = when (e) {
+        is NewDeviceKeyException -> true
+        is EstException -> isAttestationRefused(e) ||
+            (e.status == 400 && e.reason == "bad_attestation") ||
+            (e.status == 502 && e.reason == "attestation_status_unavailable")
+        else -> false
+    }
 
     private fun isSuperseded(e: EstException) = e.status == 401 && e.reason == "credential_superseded"
 
@@ -441,11 +469,14 @@ class Enroller(
         // Always a new key: an attestation challenge is fixed when the key is
         // generated, and the server wants the hash of the credential
         // presented in this request.
-        val alias = keys.create(challenge = sha256(state.deviceChain[0].encoded))
+        val alias = newDeviceKey { keys.create(challenge = sha256(state.deviceChain[0].encoded)) }
         val chain = try {
-            val keyPair = keys.keyPair(alias)
             val identity = Certs.commonName(state.deviceChain[0]).ifEmpty { "eap-enroll" }
-            val chain = client(state).reenrollDevice(Csr.create(keyPair, identity), keys.attestation(alias))
+            val (keyPair, csr, attestation) = newDeviceKey {
+                val keyPair = keys.keyPair(alias)
+                Triple(keyPair, Csr.create(keyPair, identity), keys.attestation(alias))
+            }
+            val chain = client(state).reenrollDevice(csr, attestation)
             checkIssued(chain, keyPair.public)
             chain
         } catch (e: Exception) {
@@ -464,6 +495,13 @@ class Enroller(
         closeClient()
         log("New device credential, valid until ${chain[0].notAfter}")
         return retirePreviousCredential(next)
+    }
+
+    /** Runs a step of making the new device key and its CSR, which happens on the phone only. */
+    private fun <T> newDeviceKey(step: () -> T): T = try {
+        step()
+    } catch (e: Exception) {
+        throw NewDeviceKeyException(e)
     }
 
     private fun renewWifi(state: EnrollmentState): EnrollmentState {
@@ -556,6 +594,10 @@ class Enroller(
 /** The device credential has expired; the server would refuse it in the TLS handshake. Needs a new setup link. */
 class CredentialExpiredException(val notAfter: Date) :
     GeneralSecurityException("The device credential expired on $notAfter")
+
+/** The phone couldn't make a new device key or its CSR (Keystore or StrongBox errors). */
+class NewDeviceKeyException(cause: Exception) :
+    GeneralSecurityException("Couldn't make a new device key: ${cause.message}", cause)
 
 object Certs {
     /** The first CN of the subject, or "" if there is none. */

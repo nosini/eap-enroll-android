@@ -6,12 +6,15 @@ import com.sun.net.httpserver.HttpsParameters
 import com.sun.net.httpserver.HttpsServer
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.security.spec.X509EncodedKeySpec
+import java.util.Base64
 import java.util.Collections
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
@@ -33,7 +36,11 @@ class MemoryKeys : DeviceKeys {
     private val attestationRoot = TestPki.root("Fake Attestation Root")
     private var next = 0
 
+    /** Thrown by [create] instead of making a key, like a Keystore that fails. */
+    var createFailure: Exception? = null
+
     override fun create(challenge: ByteArray?): String {
+        createFailure?.let { throw it }
         val alias = "device-${next++}"
         val keyPair = TestPki.keyPair("secp256r1")
         keys[alias] = keyPair
@@ -94,8 +101,25 @@ class FakeEstServer : AutoCloseable {
         val path: String,
         val headers: Map<String, String>,
         val clientCertificate: X509Certificate?,
+        val body: ByteArray,
     )
     class Answer(val status: Int, val body: String = "", val headers: Map<String, String> = emptyMap())
+
+    companion object {
+        /** A certificate from [issuer] for the key in the request's CSR, as the server sends it. */
+        fun issue(request: Request, issuer: TestPki.Issuer, name: String): Answer {
+            val csr = Base64.getMimeDecoder().decode(request.body)
+            val info = Der.parse(csr).children()[0]
+            val publicKey = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(info.children()[2].encoded()))
+            val leaf = TestPki.leaf(issuer, name, KeyPair(publicKey, null))
+            val body = Base64.getEncoder().encodeToString(TestPki.certsOnly(listOf(leaf, issuer.cert)))
+            return Answer(200, body, mapOf("Content-Type" to "application/pkcs7-mime; smime-type=certs-only"))
+        }
+
+        /** The answer to `wifi/profile`. */
+        fun profile(profile: WifiProfile) =
+            Answer(200, Profiles.toJson(profile).toString(), mapOf("Content-Type" to "application/json"))
+    }
 
     private val root = TestPki.root("Fake EST Root")
     private val ca = TestPki.intermediate(root, "Fake EST CA")
@@ -127,12 +151,14 @@ class FakeEstServer : AutoCloseable {
                 exchange.requestURI.path.removePrefix("/.well-known/est/"),
                 exchange.requestHeaders.mapKeys { it.key.lowercase() }.mapValues { it.value.first() },
                 runCatching { (exchange as HttpsExchange).sslSession.peerCertificates[0] as X509Certificate }.getOrNull(),
+                exchange.requestBody.readBytes(),
             )
-            exchange.requestBody.readBytes()
             requests += request
             val reply = answer(request)
             reply.headers.forEach { (name, value) -> exchange.responseHeaders.add(name, value) }
-            exchange.responseHeaders.add("Content-Type", "text/plain; charset=utf-8")
+            if (!exchange.responseHeaders.containsKey("Content-Type")) {
+                exchange.responseHeaders.add("Content-Type", "text/plain; charset=utf-8")
+            }
             val body = reply.body.toByteArray()
             exchange.sendResponseHeaders(reply.status, if (body.isEmpty()) -1 else body.size.toLong())
             if (body.isNotEmpty()) exchange.responseBody.use { it.write(body) }

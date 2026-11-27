@@ -542,14 +542,17 @@ class MainActivity : Activity() {
 
     private fun describe(action: Action, outcome: Enroller.Outcome, state: EnrollmentState?, before: BigInteger?): String {
         val error = state?.lastError?.let { "\n\n$it" } ?: ""
+        val renewed = state?.wifiChain?.get(0)?.serialNumber.let { it != null && it != before }
+        // A device credential renewal can fail after Wi-Fi was renewed all the same.
+        val alsoRenewed = if (renewed && action != Action.SETUP) getString(R.string.result_renewed) + "\n\n" else ""
         return when (outcome) {
             Enroller.Outcome.OK -> when {
                 action == Action.SETUP -> getString(R.string.result_set_up)
-                state?.wifiChain?.get(0)?.serialNumber != before -> getString(R.string.result_renewed)
+                renewed -> getString(R.string.result_renewed)
                 else -> getString(R.string.result_up_to_date)
             }
-            Enroller.Outcome.RETRY -> getString(R.string.result_retry) + error
-            Enroller.Outcome.LATER -> getString(R.string.result_later) + error
+            Enroller.Outcome.RETRY -> alsoRenewed + getString(R.string.result_retry) + error
+            Enroller.Outcome.LATER -> alsoRenewed + getString(R.string.result_later) + error
             Enroller.Outcome.WAIT -> getString(
                 R.string.result_wait,
                 DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(state?.waitUntil ?: 0)),

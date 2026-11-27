@@ -95,6 +95,66 @@ class RefusalTest {
         assertNull(store.load()!!.problem)
     }
 
+    /** The Wi-Fi certificate is due as well; the server answers the device renewal with [deviceRenewal]. */
+    private fun wifiDueAndDeviceRenewal(deviceRenewal: FakeEstServer.Answer) {
+        val old = TestPki.leaf(wifiCa, "alice", notBefore = Date(now - 45 * day), notAfter = Date(now + 15 * day))
+        store.save(store.load()!!.copy(wifiChain = listOf(old, wifiCa.cert)))
+        val profile = WifiProfile("Example Net", "radius.example.org", listOf(TestPki.root("RADIUS CA").cert))
+        server.answer = {
+            when (it.path) {
+                "device/simplereenroll" -> deviceRenewal
+                "wifi/profile" -> FakeEstServer.profile(profile)
+                "wifi/simpleenroll" -> FakeEstServer.issue(it, wifiCa, "alice")
+                else -> FakeEstServer.Answer(503, "unavailable\n")
+            }
+        }
+    }
+
+    private fun assertWifiRenewedWithCurrentCredential(paths: List<String>, reason: String) {
+        assertEquals(reason, paths, server.requests.map { it.path })
+        server.requests.forEach { assertEquals(reason, credential, it.clientCertificate) }
+        assertEquals(reason, 1, wifi.installs.size)
+        val state = store.load()!!
+        assertEquals(reason, credential, state.deviceChain[0])
+        assertNull(reason, state.previousDeviceAlias)
+        assertEquals(reason, wifi.installs[0].chain[0], state.wifiChain!![0])
+        assertNull(reason, state.problem)
+        assertTrue(reason, state.lastError!!.contains(reason))
+        assertEquals(reason, setOf(state.deviceAlias), keys.keys.keys)
+    }
+
+    @Test
+    fun attestationProblemsDoNotHoldUpWifiRenewal() {
+        for ((answer, outcome) in listOf(
+            FakeEstServer.Answer(400, "attestation required\n", mapOf("Enroll-Error" to "bad_attestation")) to Enroller.Outcome.RETRY,
+            FakeEstServer.Answer(502, "no status list\n", mapOf("Enroll-Error" to "attestation_status_unavailable")) to Enroller.Outcome.RETRY,
+            FakeEstServer.Answer(403, "refused\n", mapOf("Enroll-Error" to "attestation_refused")) to Enroller.Outcome.LATER,
+        )) {
+            val reason = answer.headers.getValue("Enroll-Error")
+            server.requests.clear()
+            wifi.installs.clear()
+            wifiDueAndDeviceRenewal(answer)
+            assertEquals(reason, outcome, enroller.maintain())
+            assertWifiRenewedWithCurrentCredential(listOf("device/simplereenroll", "wifi/profile", "wifi/simpleenroll"), reason)
+        }
+    }
+
+    @Test
+    fun failedDeviceKeyDoesNotHoldUpWifiRenewal() {
+        wifiDueAndDeviceRenewal(FakeEstServer.Answer(500))
+        keys.createFailure = java.security.ProviderException("StrongBox failed")
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertWifiRenewedWithCurrentCredential(listOf("wifi/profile", "wifi/simpleenroll"), "StrongBox failed")
+    }
+
+    @Test
+    fun otherDeviceRenewalErrorsStopTheCheck() {
+        wifiDueAndDeviceRenewal(FakeEstServer.Answer(400, "bad CSR\n", mapOf("Enroll-Error" to "bad_csr")))
+        assertEquals(Enroller.Outcome.RETRY, enroller.maintain())
+        assertEquals(listOf("device/simplereenroll"), server.requests.map { it.path })
+        assertTrue(wifi.installs.isEmpty())
+    }
+
     @Test
     fun tooManyRequestsWaitsForRetryAfter() {
         answer(429, "Retry-After" to "120", "Enroll-Error" to "too_many_certificates")

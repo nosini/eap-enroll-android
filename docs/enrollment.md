@@ -116,6 +116,12 @@ restarts, needs a network) does whatever is due:
   the same credential (and another new key). The server retires a
   credential it issued but never saw used, so only the credential from an
   answer that actually arrived is ever stored and used.
+- A renewal that fails over the new key's attestation (`400
+  bad_attestation`, `403 attestation_refused`, `502
+  attestation_status_unavailable`), or because the phone can't make the
+  new key, doesn't hold up the Wi-Fi certificate. The current credential
+  still works and `wifi/simpleenroll` isn't attested, so a Wi-Fi
+  certificate that is due is renewed in the same check.
 - Once the new credential is stored, the old one is never used again: the
   server treats a replaced credential that comes back as copied, disables
   the device and revokes its certificates. So:

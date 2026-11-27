@@ -231,6 +231,7 @@ func main() {
 	bin := flag.String("eap-enroll", "", "eap-enroll binary")
 	publicPort := flag.Int("public-port", 0, "port on 127.0.0.1 for clients (default: any free port)")
 	deviceTTL := flag.String("device-ttl", "8760h", "device credential lifetime (at least 1h; renewal is due at 2/3)")
+	wifiTTL := flag.String("wifi-ttl", "1440h", "Wi-Fi certificate lifetime (at least 1h; renewal is due at 2/3)")
 	attestationRoots := flag.String("attestation-roots", "", "require Android key attestation, trusting the roots in this PEM file (eap-enroll-server's deploy/attestation-roots.pem)")
 	appPackage := flag.String("app-package", "eu.appwerf.eapenroll", "with -attestation-roots: the app's package name the attestation must name")
 	var appSigningCerts stringList
@@ -294,7 +295,7 @@ func main() {
 		"wifi_cacerts_file":   write(d, "wifi-cacerts.pem", pemCert(wifiCA.cert, root.cert)),
 		"device_cacerts_file": write(d, "device-cacerts.pem", pemCert(deviceCA.cert, root.cert)),
 		"database":            filepath.Join(d, "enroll.db"),
-		"wifi_ttl":            "1440h",
+		"wifi_ttl":            *wifiTTL,
 		"device_ttl":          *deviceTTL,
 		"wifi_profile": map[string]any{
 			"ssid":           "Example Net ",

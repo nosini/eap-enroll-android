@@ -32,7 +32,7 @@ For a phone test, run the harness by hand and reach it through
 
 ```sh
 build/e2e/e2e-harness -dir build/e2e/phone -eap-enroll /path/to/eap-enroll \
-  -public-port 8443 [-device-ttl 1h] \
+  -public-port 8443 [-device-ttl 1h] [-wifi-ttl 2h] \
   [-attestation-roots /path/to/attestation-roots.pem -app-signing-cert SHA256]
 ```
 
@@ -50,6 +50,7 @@ build/e2e/e2e-harness -dir build/e2e/phone -eap-enroll /path/to/eap-enroll \
   attestation must name.
 - `-device-ttl`: device credential lifetime (default `8760h`, at least
   `1h`), so a renewal comes due within the test.
+- `-wifi-ttl`: Wi-Fi certificate lifetime (default `1440h`, at least `1h`).
 - `POST …/code` (control URL in `build/e2e/phone/control`) runs the
   `eap-enroll` binary, which answers `exit status 1: <its stderr>` on
   failure. The fake OpenBao has only `alice` enabled (`bob` is

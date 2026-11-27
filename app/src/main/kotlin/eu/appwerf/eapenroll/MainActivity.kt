@@ -479,6 +479,9 @@ class MainActivity : Activity() {
         intent.data = null
         try {
             val link = SetupUri.parse(data.toString())
+            // A flag from a setup that ended while no activity was there
+            // must not wipe this link on the next render.
+            screen.setupUsed = false
             setupField.setText(data.toString())
             screen.setupRequested = true
             showMessage(getString(R.string.link_filled_in, link.serverUrl))
@@ -493,6 +496,9 @@ class MainActivity : Activity() {
             showMessage(getString(R.string.clipboard_empty))
             return
         }
+        // As in handleSetupIntent(): a pending flag is for the old field
+        // text, not this link.
+        screen.setupUsed = false
         setupField.setText(text.trim())
     }
 
@@ -773,6 +779,9 @@ private object MainScreen {
     fun finish(text: String) = main.post {
         busy = false
         message = text
+        // Without an activity to clear the field, the flag would wipe the
+        // next link that is opened.
+        if (listener == null) setupUsed = false
         listener?.invoke()
     }
 }

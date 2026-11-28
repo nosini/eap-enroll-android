@@ -33,10 +33,10 @@ the Android SDK packages; update them there together.
 
 GitHub Actions builds releases from version tags only; pushes to `main`
 don't build anything. For a `v*` tag it runs the unit tests and lint,
-then builds and signs the release APK, and publishes it as a GitHub
-release. Tests and lint run in a job of their own that never gets the
-signing secrets; the signing job builds without a Gradle cache, daemon or
-configuration cache, so nothing from the test run or the build keeps the
+then builds and signs the release APK, attests it, and publishes it as a
+GitHub release. Tests and lint run in a job of their own that never gets
+the signing secrets; the signing job builds without a Gradle cache, daemon
+or configuration cache, so nothing from the test run or the build keeps the
 key. The tag must match `versionName` and be reachable from `main`:
 
     git tag -s v0.2.0 -m "EAP Enroll 0.2.0"
@@ -47,6 +47,20 @@ fails rather than replacing the APK; it only finishes a draft that an
 earlier run left behind. For a fixed build, release a new version. A
 release is created only when GitHub says there is none; if looking it up
 fails for another reason, the step fails with that error.
+
+The attest job signs a SLSA build provenance attestation for the APK's
+SHA-256 with `actions/attest`, which gets a short-lived Sigstore
+certificate for the workflow run through GitHub's OIDC token. It is the
+only job with `id-token: write`, and it never has the signing key; the
+release is published only after it succeeds. A re-run that rebuilds a
+draft's APK attests the new APK too, since an APK signature (ECDSA) is
+different on every build.
+
+The repository has immutable releases turned on (**Settings → General →
+Releases**): once published, a release's APK and tag can't be changed or
+deleted, and GitHub adds an attestation of the release. Uploading to a
+draft still works, which the publish step relies on. README.md shows the
+`gh` commands that check both attestations.
 
 Signing needs two repository secrets:
 

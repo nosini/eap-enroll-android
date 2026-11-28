@@ -40,6 +40,21 @@ Releases are signed with this certificate (check with
     CN=EAP Enroll
     SHA-256 13:F8:8F:4D:76:22:54:BA:A4:32:A9:44:29:E2:85:C2:B0:C0:84:33:E4:28:E3:1C:92:62:9A:4E:14:94:75:05
 
+Releases after 0.5.0 also have a build provenance attestation, a
+Sigstore signature that ties the APK's SHA-256 to the commit and the
+GitHub Actions run that built it. Check it with the GitHub CLI:
+
+    gh attestation verify eap-enroll-<version>.apk \
+        --repo nosini/eap-enroll-android \
+        --signer-workflow nosini/eap-enroll-android/.github/workflows/build.yml \
+        --source-ref refs/tags/v<version> --deny-self-hosted-runners
+
+They are also immutable releases: once published, their APK and tag
+can't be changed. This checks a download against GitHub's attestation
+of the release:
+
+    gh release verify-asset v<version> eap-enroll-<version>.apk
+
 ## Set up
 
 1. Ask the network's administrator for a setup code. They run

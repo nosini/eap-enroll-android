@@ -13,7 +13,9 @@ leaves the phone.
 
 A key generated directly in hardware can't be used for Wi-Fi unless a
 device or profile owner delegates certificate installation and selection
-to the app.
+to the app. With both scopes delegated in a work profile, the app
+generates the key in the KeyChain and Wi-Fi uses it by alias from a
+network suggestion (verified on Android 17 against WPA3-Enterprise).
 
 ## How Android handles EAP-TLS keys
 
@@ -117,6 +119,14 @@ but requires generating or exporting the private key outside Wi-Fi.
 
 ## Observed Android behaviour
 
+- In a work profile whose profile owner delegates `DELEGATION_CERT_INSTALL`
+  and `DELEGATION_CERT_SELECTION`, an EC P-384 key from
+  `DevicePolicyManager.generateKeyPair()` lands in the TEE. With its
+  certificate stored by `setKeyPairCertificate()` and the key granted by
+  `grantKeyPairToWifiAuth()`, a suggestion with `setClientKeyPairAlias()`
+  is accepted and authenticates to WPA3-Enterprise. Renewing with a new
+  key, removing the replaced key with `removeKeyPair()`, and falling back
+  to a software key after the scopes are withdrawn all work.
 - Both `addNetworkSuggestions()` and `Settings.ACTION_WIFI_ADD_NETWORKS`
   accept an app-generated EC P-384 key and certificate chain for EAP-TLS
   (including WPA3-Enterprise). Settings saves the key under the alias

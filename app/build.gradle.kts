@@ -73,6 +73,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    // AGP otherwise puts a dependency list, encrypted with Google Play's key,
+    // into the APK signing block. Nobody can read it except Google, and the
+    // app isn't on Play.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
 }
 
 dependencies {

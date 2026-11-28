@@ -53,7 +53,8 @@ They are also immutable releases: once published, their APK and tag
 can't be changed. This checks a download against GitHub's attestation
 of the release:
 
-    gh release verify-asset v<version> eap-enroll-<version>.apk
+    gh release verify-asset v<version> eap-enroll-<version>.apk \
+        --repo nosini/eap-enroll-android
 
 ## Set up
 
